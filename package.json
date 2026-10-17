@@ -1,0 +1,22 @@
+{
+  "name": "euphire",
+  "version": "1.0.0",
+  "description": "euphire - A multi-guild Discord music bot with ChatPlay",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy": "node src/deploy-commands.js",
+    "reset-stats": "node scripts/reset-profile-stats.js"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.10",
+    "better-sqlite3": "^13.0.3",
+    "cheerio": "^1.2.0",
+    "discord.js": "14.25.1",
+    "dotenv": "^16.4.7",
+    "mongodb": "^7.7.0",
+    "mongoose": "^9.11.2",
+    "musicard": "latest",
+    "riffy": "1.0.12"
+  }
+}
