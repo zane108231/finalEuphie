@@ -136,7 +136,26 @@ class MongoCoordinator {
 
     setSessionChannel(voiceChannelId, channelId) {
         if (!voiceChannelId || !channelId) return;
-        this.sessionChannels.set(voiceChannelId, String(channelId));
+        const textChannelId = String(channelId);
+        this.sessionChannels.set(voiceChannelId, textChannelId);
+        if (!isDBConnected()) return Promise.resolve(false);
+
+        const botId = this.sessionOwners.get(voiceChannelId);
+        return getDB().collection('sessions').updateOne(
+            { voiceChannelId },
+            {
+                $set: {
+                    voiceChannelId,
+                    channelId: textChannelId,
+                    ...(botId ? { botId } : {}),
+                    updatedAt: Date.now()
+                }
+            },
+            { upsert: true }
+        ).then(() => true).catch((err) => {
+            console.error(`[euphire] Failed to save text channel for voice session ${voiceChannelId}:`, err.message);
+            return false;
+        });
     }
 
     getSessionChannel(voiceChannelId) {
@@ -161,14 +180,16 @@ class MongoCoordinator {
      * Reserve a specific bot for a voice channel
      */
     async reserveSpecificBot(voiceChannelId, userId, botId, guildId, force = false) {
-        // Prevent reserving any bot that is already occupied in a DIFFERENT voice channel
-        const currentVc = this.getBotVoiceChannel(botId);
-        if (currentVc && currentVc !== voiceChannelId) {
-            console.log(`[euphire] Cannot reserve bot ${botId} for VC ${voiceChannelId} - already occupied in VC ${currentVc}`);
-            return false;
+        // Prevent reserving any bot that is already occupied in a DIFFERENT voice channel in THIS guild
+        if (guildId) {
+            const currentVcInGuild = this.getBotVoiceChannelInGuild(botId, guildId);
+            if (currentVcInGuild && currentVcInGuild !== voiceChannelId) {
+                console.log(`[euphire] Cannot reserve bot ${botId} for VC ${voiceChannelId} - already occupied in guild ${guildId} VC ${currentVcInGuild}`);
+                return false;
+            }
         }
 
-        if (!force && !this.isBotAvailable(botId)) {
+        if (!force && guildId && !this.isBotAvailable(botId, guildId)) {
             return false;
         }
         
@@ -181,9 +202,6 @@ class MongoCoordinator {
             this.botSessions.set(botId, new Set());
         }
         this.botSessions.get(botId).add(voiceChannelId);
-
-        // Update status
-        this.markBotReserved(botId);
 
         // Save to MongoDB
         await this.saveSessionToDB(voiceChannelId, botId, guildId, userId);
@@ -320,9 +338,49 @@ class MongoCoordinator {
     }
 
     /**
-     * Get the voice channel ID a bot is currently connected to (if any)
+     * Get the voice channel ID a bot is currently connected to in a specific guild
      */
-    getBotVoiceChannel(botId) {
+    getBotVoiceChannelInGuild(botId, guildId) {
+        if (!botId || !guildId) return null;
+        const client = this.getClient(botId);
+        if (!client || !client.user) return null;
+
+        const guild = client.guilds?.cache?.get(guildId);
+        if (!guild) return null;
+
+        // 1. Check guild voiceStates cache (always kept fresh in real-time by Discord Gateway)
+        const vs = guild.voiceStates?.cache?.get(client.user.id);
+        if (vs?.channelId) return vs.channelId;
+
+        const me = guild.members?.cache?.get(client.user.id) || guild.members?.me;
+        if (me?.voice?.channelId) return me.voice.channelId;
+
+        // 2. Check riffy player for this guild
+        const player = client.riffy?.players?.get(guildId);
+        if (player?.voiceChannel) return player.voiceChannel;
+
+        // 3. Check sessions for this guild
+        const sessions = this.botSessions.get(botId);
+        if (sessions) {
+            for (const vcId of sessions) {
+                if (guild.channels?.cache?.has(vcId)) {
+                    return vcId;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the voice channel ID a bot is currently connected to
+     * If guildId is provided, returns the channel in that guild.
+     */
+    getBotVoiceChannel(botId, guildId = null) {
+        if (guildId) {
+            return this.getBotVoiceChannelInGuild(botId, guildId);
+        }
+
         const client = this.getClient(botId);
         if (!client || !client.user) return null;
 
@@ -337,20 +395,7 @@ class MongoCoordinator {
             }
         }
 
-        // 2. Check coordinator recorded sessions
-        const sessions = this.botSessions.get(botId);
-        if (sessions && sessions.size > 0) {
-            for (const vcId of sessions) {
-                return vcId;
-            }
-        }
-        for (const [vcId, ownerId] of this.sessionOwners.entries()) {
-            if (ownerId === botId) {
-                return vcId;
-            }
-        }
-
-        // 3. Check riffy players
+        // 2. Check riffy players
         if (client.riffy?.players) {
             for (const [, p] of client.riffy.players) {
                 if (p && p.voiceChannel) {
@@ -363,17 +408,29 @@ class MongoCoordinator {
     }
 
     /**
-     * Check if a bot is available (must have status 'available' AND not be in any voice channel)
+     * Check if a bot is available.
+     * If guildId is provided, checks if bot is available to play in THAT specific guild.
      */
-    isBotAvailable(botId) {
-        if (this.botStatus.get(botId) !== 'available') {
+    isBotAvailable(botId, guildId = null) {
+        const client = this.getClient(botId);
+        if (!client || !client.isReady() || !client.user) {
             return false;
         }
 
-        // If bot is in ANY voice channel, it is NEVER available to be allocated elsewhere
-        const currentVc = this.getBotVoiceChannel(botId);
-        if (currentVc) {
+        if (this.botStatus.get(botId) === 'disconnected') {
             return false;
+        }
+
+        // If guildId is specified, the bot must be in that guild and NOT in a voice channel in that guild
+        if (guildId) {
+            const guild = client.guilds?.cache?.get(guildId);
+            if (!guild) return false;
+
+            const vcInGuild = this.getBotVoiceChannelInGuild(botId, guildId);
+            if (vcInGuild) {
+                return false; // Already in a voice channel in THIS guild
+            }
+            return true;
         }
 
         return true;
@@ -384,15 +441,8 @@ class MongoCoordinator {
      */
     hasAnyAvailableBot(guildId = null) {
         for (const botId of this.botPriority) {
-            if (this.isBotAvailable(botId)) {
-                if (guildId) {
-                    const client = this.getClient(botId);
-                    if (client && client.guilds.cache.has(guildId)) {
-                        return true;
-                    }
-                } else {
-                    return true;
-                }
+            if (this.isBotAvailable(botId, guildId)) {
+                return true;
             }
         }
         return false;
@@ -405,7 +455,7 @@ class MongoCoordinator {
         if (!guildId) return this.primaryBotId;
         for (const botId of this.botPriority) {
             const client = this.getClient(botId);
-            if (client && client.guilds.cache.has(guildId)) {
+            if (client && client.isReady() && client.guilds.cache.has(guildId)) {
                 return botId;
             }
         }
@@ -417,15 +467,8 @@ class MongoCoordinator {
      */
     getAvailableBotInGuild(guildId) {
         for (const botId of this.botPriority) {
-            if (this.isBotAvailable(botId)) {
-                if (guildId) {
-                    const client = this.getClient(botId);
-                    if (client && client.guilds.cache.has(guildId)) {
-                        return botId;
-                    }
-                } else {
-                    return botId;
-                }
+            if (this.isBotAvailable(botId, guildId)) {
+                return botId;
             }
         }
         return null;
@@ -490,38 +533,24 @@ class MongoCoordinator {
      * Mark a bot as reserved
      */
     markBotReserved(botId) {
-        const oldStatus = this.botStatus.get(botId);
-        this.botStatus.set(botId, 'reserved');
-        // console.log(`[euphire] Bot ${botId} marked as reserved (was: ${oldStatus})`);
+        // No-op: bot availability is tracked per-guild now
     }
 
     /**
      * Mark a bot as active
      */
     async markBotActive(botId, voiceChannelId) {
-        const oldStatus = this.botStatus.get(botId);
-        this.botStatus.set(botId, 'active');
-
         // Update session in MongoDB with active status
         if (voiceChannelId) {
             await this.saveSessionToDB(voiceChannelId, botId, null);
         }
-
-        // console.log(`[euphire] Bot ${botId} marked as active for voice channel ${voiceChannelId} (was: ${oldStatus})`);
     }
 
     /**
      * Mark a bot as available
      */
     markBotAvailable(botId) {
-        const currentVc = this.getBotVoiceChannel(botId);
-        if (currentVc) {
-            console.log(`[euphire] Cannot mark bot ${botId} as available - still in voice channel ${currentVc}`);
-            return;
-        }
-        const oldStatus = this.botStatus.get(botId);
         this.botStatus.set(botId, 'available');
-        // console.log(`[euphire] Bot ${botId} marked as available (was: ${oldStatus})`);
     }
 
     /**

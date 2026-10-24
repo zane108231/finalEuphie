@@ -1,8 +1,30 @@
-const { SlashCommandBuilder, MessageFlags, ContainerBuilder, TextDisplayBuilder } = require("discord.js");
-const { getGuildData } = require("../utils/mongoGuildData");
-const { isDuplicateTrack, ensurePlayer, getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
+const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js");
+const { isDuplicateTrack, getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
 const { createNoBotInVoiceEmbed } = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
+
+const SPOTIFY_ICON_URL = "https://cdn.discordapp.com/emojis/1561285569068273674.png";
+
+function formatDurationLeadingZero(ms) {
+    if (!ms || isNaN(ms)) return "00:00";
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours > 0) {
+        return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+    }
+    return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+}
+
+async function sendPublicEmbed(interaction, embed) {
+    try {
+        await interaction.channel.send({ embeds: [embed] });
+        await interaction.deleteReply().catch(() => {});
+    } catch (err) {
+        await interaction.editReply({ embeds: [embed] });
+    }
+}
 
 module.exports = {
     aliases: ["ins"],
@@ -87,48 +109,56 @@ module.exports = {
 
                 // Check if track is already in queue or currently playing
                 if (isDuplicateTrack(player, track)) {
-                    const container = new ContainerBuilder();
-                    container.addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent(
-                            "### ⚠️ Duplicate Detected\n\n" +
-                            "**Track**\n" +
-                            `-# ${track.info.title}\n\n` +
-                            "**Status**\n" +
-                            `-# Already in queue or currently playing`
-                        )
-                    );
+                    const dupEmbed = new EmbedBuilder()
+                        .setColor(0xED4245)
+                        .setDescription(`⚠️ **Duplicate Detected**: [${track.info.title} by ${track.info.author}](${track.info.uri || "https://open.spotify.com"}) is already in queue or playing.`);
                     return await interaction.editReply({
-                        components: [container],
-                        flags: MessageFlags.IsComponentsV2,
+                        embeds: [dupEmbed],
                     });
                 }
 
                 track.info.requester = interaction.user;
 
                 // Insert at position 1 (right after currently playing track)
-                // Save current queue
                 const queueArray = [...player.queue];
-                
-                // Clear queue and rebuild with inserted track at position 1
                 player.queue.clear();
-                player.queue.add(track); // Add inserted track first (position 1)
+                player.queue.add(track); // Add inserted track first (next in queue)
                 queueArray.forEach(t => player.queue.add(t)); // Add remaining tracks
 
-                const container = new ContainerBuilder();
-                container.addTextDisplayComponents(
-                    new TextDisplayBuilder().setContent(
-                        "### ✅ Track Inserted\n\n" +
-                        "**Title**\n" +
-                        `-# ${track.info.title}\n\n` +
-                        "**Artist**\n" +
-                        `-# ${track.info.author}\n\n` +
-                        "**Status**\n-# Playing next after current track"
+                // Compute time remaining on current track
+                const etaMs = Math.max(0, (player.current.info?.length || 0) - (player.position || 0));
+                const eta = formatDurationLeadingZero(etaMs);
+                const trackLength = formatDurationLeadingZero(track.info.length || 0);
+                const trackUri = track.info.uri || "https://open.spotify.com";
+                const trackValue = `[${track.info.title} by ${track.info.author}](${trackUri})`;
+                const thumbnail = track.info.thumbnail || track.info.artworkUrl || null;
+
+                // Build Added Track Embed strictly matching Image #1
+                const embed = new EmbedBuilder()
+                    .setColor(0x2b2d31)
+                    .setAuthor({
+                        name: "Added Track",
+                        iconURL: SPOTIFY_ICON_URL,
+                    })
+                    .addFields(
+                        { name: "Track", value: trackValue, inline: false },
+                        { name: "Estimated time until played", value: eta, inline: true },
+                        { name: "Track Length", value: trackLength, inline: true },
+                        { name: "\u200b", value: "\u200b", inline: true },
+                        { name: "Position in upcoming", value: "Next", inline: true },
+                        { name: "Position in queue", value: "2", inline: true },
+                        { name: "\u200b", value: "\u200b", inline: true }
                     )
-                );
-                await interaction.editReply({
-                    components: [container],
-                    flags: MessageFlags.IsComponentsV2,
-                });
+                    .setFooter({
+                        text: `Requested by ${interaction.user.tag || interaction.user.username}`,
+                        iconURL: interaction.user.displayAvatarURL(),
+                    });
+
+                if (thumbnail) {
+                    embed.setThumbnail(thumbnail);
+                }
+
+                await sendPublicEmbed(interaction, embed);
             } else {
                 return interaction.editReply({ content: `❌ No results found. (loadType: ${loadType})` });
             }

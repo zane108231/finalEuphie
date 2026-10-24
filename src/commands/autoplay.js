@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, MessageFlags, ContainerBuilder, TextDisplayBuilder } = require("discord.js");
+const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 
 module.exports = {
@@ -14,18 +14,10 @@ module.exports = {
 
         const status = guildData.autoplay ? "enabled" : "disabled";
 
-        const container = new ContainerBuilder();
-        container.addTextDisplayComponents(
-            new TextDisplayBuilder().setContent(
-                "### 📻 Autoplay " + (guildData.autoplay ? "Enabled" : "Disabled") + "\n\n" +
-                "**Status**\n" +
-                `-# Autoplay is now ${status}. When the queue ends, I will automatically play similar songs.`
-            )
-        );
+        const embed = new EmbedBuilder()
+            .setColor(0x00FF00)
+            .setDescription(`Autoplay has been ${status}`);
 
-        await interaction.reply({
-            components: [container],
-            flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
-        });
+        await interaction.reply({ embeds: [embed] });
     },
 };

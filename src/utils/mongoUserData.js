@@ -80,6 +80,16 @@ function createDefaultUserData() {
         lastfmTokenTimestamp: null,
         profileBackground: 'default',
         profileColor: null,
+        profileVisibility: 'public', // 'public' | 'private'
+        profilePrivacy: {
+            servers: true,
+            friends: true,
+            tracks: true,
+        },
+        avatarShape: 'circle', // 'circle' | 'square'
+        avatarBorder: null, // hex string, 'none', or null (default)
+        avatarBackground: null, // hex string or null
+        serverVisibility: {}, // guildId -> 'public' | 'private'
         createdAt: Date.now(),
         updatedAt: Date.now()
     };
@@ -100,8 +110,78 @@ async function deleteUserData(userId) {
     await db.collection('userData').deleteOne({ userId });
 }
 
+/**
+ * Save user custom background to MongoDB
+ */
+async function saveUserBackground(userId, imageBuffer, contentType = 'image/png') {
+    if (!userId || !imageBuffer) return;
+    const base64 = Buffer.isBuffer(imageBuffer) ? imageBuffer.toString('base64') : imageBuffer;
+    
+    if (!isDBConnected()) {
+        if (!global.fallbackBgStore) global.fallbackBgStore = new Map();
+        global.fallbackBgStore.set(userId, { base64, contentType, updatedAt: Date.now() });
+        return;
+    }
+
+    const db = getDB();
+    await db.collection('userBackgrounds').updateOne(
+        { userId },
+        { 
+            $set: { 
+                userId, 
+                imageBase64: base64, 
+                contentType, 
+                updatedAt: Date.now() 
+            } 
+        },
+        { upsert: true }
+    );
+    console.log(`[euphire] Saved custom background to MongoDB for user ${userId}`);
+}
+
+/**
+ * Get user custom background from MongoDB
+ */
+async function getUserBackground(userId) {
+    if (!userId) return null;
+    
+    if (!isDBConnected()) {
+        if (global.fallbackBgStore && global.fallbackBgStore.has(userId)) {
+            const entry = global.fallbackBgStore.get(userId);
+            return Buffer.from(entry.base64, 'base64');
+        }
+        return null;
+    }
+
+    const db = getDB();
+    const doc = await db.collection('userBackgrounds').findOne({ userId });
+    if (!doc || !doc.imageBase64) return null;
+    return Buffer.from(doc.imageBase64, 'base64');
+}
+
+/**
+ * Delete user custom background from MongoDB
+ */
+async function deleteUserBackground(userId) {
+    if (!userId) return;
+    
+    if (!isDBConnected()) {
+        if (global.fallbackBgStore) {
+            global.fallbackBgStore.delete(userId);
+        }
+        return;
+    }
+
+    const db = getDB();
+    await db.collection('userBackgrounds').deleteOne({ userId });
+    console.log(`[euphire] Deleted custom background from MongoDB for user ${userId}`);
+}
+
 module.exports = {
     getUserData,
     saveUserData,
-    deleteUserData
+    deleteUserData,
+    saveUserBackground,
+    getUserBackground,
+    deleteUserBackground
 };

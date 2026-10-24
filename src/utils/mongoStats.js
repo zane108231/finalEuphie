@@ -158,44 +158,73 @@ async function endSession(sessionId, completedNaturally = false, actualPositionM
         }
         
         durationMs = Math.max(0, Math.floor(durationMs));
-        console.log(`[euphire] endSession: committing ${durationMs} ms for user: ${session.userId}, track: "${session.trackTitle}"`);
+        console.log(`[euphire] endSession: session base duration: ${durationMs} ms for session: ${sessionId}, track: "${session.trackTitle}"`);
         
-        // Count listening time if user listened for at least 5 seconds
-        if (durationMs >= 5000) {
-            await ensureUser(session.userId);
-            
-            // Count track as played if completed naturally or listened to for at least 30 seconds
-            const trackPlayedIncrement = (completedNaturally || durationMs >= 30000) ? 1 : 0;
-            
-            // Update user total listening time
-            const userResult = await db.collection('userStats').updateOne(
-                { userId: session.userId },
+        // Collect all listeners: session owner (DJ) + all VC participants
+        const listeners = new Map();
+        if (session.userId && durationMs >= 5000) {
+            listeners.set(session.userId, durationMs);
+        }
+
+        const participants = await db.collection('sessionParticipants')
+            .find({ sessionId })
+            .toArray();
+
+        for (const p of participants) {
+            let pDuration = p.listenedMs || 0;
+            if (p.joinedAt) {
+                pDuration += Math.max(0, now - p.joinedAt);
+            }
+            if (completedNaturally && pDuration >= Math.max(0, durationMs - 5000)) {
+                pDuration = durationMs;
+            } else {
+                pDuration = Math.min(pDuration, durationMs);
+            }
+            pDuration = Math.max(0, Math.floor(pDuration));
+
+            const cur = listeners.get(p.userId) || 0;
+            listeners.set(p.userId, Math.max(cur, pDuration));
+        }
+
+        console.log(`[euphire] endSession: committing stats for ${listeners.size} listener(s):`, [...listeners.entries()]);
+
+        // Commit stats for EVERY listener (requester + everyone in VC)
+        for (const [listenerId, listenerMs] of listeners.entries()) {
+            if (listenerMs < 5000) continue;
+
+            await ensureUser(listenerId);
+
+            const trackPlayedIncrement = (completedNaturally && listenerMs >= Math.min(30000, durationMs * 0.5)) || listenerMs >= 30000 ? 1 : 0;
+
+            // 1. Update user total listening time and tracks played
+            await db.collection('userStats').updateOne(
+                { userId: listenerId },
                 { 
                     $inc: { 
-                        totalListeningMs: durationMs,
+                        totalListeningMs: listenerMs,
                         tracksPlayed: trackPlayedIncrement
                     },
                     $set: { updatedAt: now }
-                }
+                },
+                { upsert: true }
             );
-            console.log(`[euphire] endSession: userStats update result: ${userResult.modifiedCount} modified`);
-            
-            // Update server listening time
+
+            // 2. Update server listening time (Top Servers!)
             await db.collection('serverStats').updateOne(
-                { userId: session.userId, guildId: session.guildId },
+                { userId: listenerId, guildId: session.guildId },
                 { 
-                    $inc: { listeningMs: durationMs },
+                    $inc: { listeningMs: listenerMs },
                     $set: { guildName: session.guildName || "Unknown Server" }
                 },
                 { upsert: true }
             );
-            
-            // Update track statistics
+
+            // 3. Update track statistics (Top Tracks!)
             await db.collection('trackStats').updateOne(
-                { userId: session.userId, trackId: session.trackId },
+                { userId: listenerId, trackId: session.trackId },
                 { 
                     $inc: { 
-                        listeningMs: durationMs,
+                        listeningMs: listenerMs,
                         playCount: trackPlayedIncrement
                     },
                     $set: { 
@@ -206,29 +235,33 @@ async function endSession(sessionId, completedNaturally = false, actualPositionM
                 },
                 { upsert: true }
             );
-            
-            // Update shared listening time for all participants
-            const participants = await db.collection('sessionParticipants')
-                .find({ sessionId, userId: { $ne: session.userId } })
-                .toArray();
-            
-            for (const participant of participants) {
-                await ensureUser(participant.userId);
-                
-                await db.collection('sharedListening').updateOne(
-                    { userId: session.userId, friendId: participant.userId, guildId: session.guildId },
-                    { $inc: { sharedMs: durationMs } },
-                    { upsert: true }
-                );
-                
-                await db.collection('sharedListening').updateOne(
-                    { userId: participant.userId, friendId: session.userId, guildId: session.guildId },
-                    { $inc: { sharedMs: durationMs } },
-                    { upsert: true }
-                );
+            console.log(`[euphire] endSession: updated stats for listener ${listenerId}: +${listenerMs}ms, +${trackPlayedIncrement} plays`);
+        }
+
+        // 4. Update shared listening time for all pairs of listeners (Top Friends!)
+        const qualifiedListeners = [...listeners.entries()].filter(([_, ms]) => ms >= 5000);
+        for (let i = 0; i < qualifiedListeners.length; i++) {
+            for (let j = i + 1; j < qualifiedListeners.length; j++) {
+                const [userA, msA] = qualifiedListeners[i];
+                const [userB, msB] = qualifiedListeners[j];
+                const sharedMs = Math.min(msA, msB);
+                if (sharedMs >= 5000) {
+                    await ensureUser(userA);
+                    await ensureUser(userB);
+
+                    await db.collection('sharedListening').updateOne(
+                        { userId: userA, friendId: userB, guildId: session.guildId },
+                        { $inc: { sharedMs: sharedMs } },
+                        { upsert: true }
+                    );
+
+                    await db.collection('sharedListening').updateOne(
+                        { userId: userB, friendId: userA, guildId: session.guildId },
+                        { $inc: { sharedMs: sharedMs } },
+                        { upsert: true }
+                    );
+                }
             }
-        } else {
-            console.log("[euphire] endSession: duration is less than 5 seconds, not committing stats");
         }
         
         // Delete session and participants from active sessions
@@ -245,28 +278,62 @@ async function endSession(sessionId, completedNaturally = false, actualPositionM
  * Add a participant to an active session
  */
 async function addSessionParticipant(sessionId, userId) {
-    if (!isDBConnected()) return;
+    if (!sessionId || !userId || !isDBConnected()) return;
     
     const db = getDB();
     const now = Date.now();
     
-    await db.collection('sessionParticipants').updateOne(
-        { sessionId, userId },
-        { $set: { joinedAt: now } },
-        { upsert: true }
-    );
+    try {
+        const existing = await db.collection('sessionParticipants').findOne({ sessionId, userId });
+        if (existing) {
+            await db.collection('sessionParticipants').updateOne(
+                { sessionId, userId },
+                { 
+                    $set: { joinedAt: now },
+                    $unset: { leftAt: "" }
+                }
+            );
+        } else {
+            await db.collection('sessionParticipants').updateOne(
+                { sessionId, userId },
+                { 
+                    $setOnInsert: { 
+                        sessionId, 
+                        userId, 
+                        listenedMs: 0 
+                    },
+                    $set: { joinedAt: now }
+                },
+                { upsert: true }
+            );
+        }
+    } catch (err) {
+        console.error("[euphire] Failed to add session participant:", err.message);
+    }
 }
 
 /**
  * Remove a participant from an active session
  */
 async function removeSessionParticipant(sessionId, userId) {
-    if (!isDBConnected()) return;
+    if (!sessionId || !userId || !isDBConnected()) return;
     
     const db = getDB();
+    const now = Date.now();
     
     try {
-        await db.collection('sessionParticipants').deleteOne({ sessionId, userId });
+        const participant = await db.collection('sessionParticipants').findOne({ sessionId, userId });
+        if (participant && participant.joinedAt) {
+            const currentInterval = Math.max(0, now - participant.joinedAt);
+            const totalMs = (participant.listenedMs || 0) + currentInterval;
+            await db.collection('sessionParticipants').updateOne(
+                { sessionId, userId },
+                { 
+                    $set: { leftAt: now, listenedMs: totalMs },
+                    $unset: { joinedAt: "" }
+                }
+            );
+        }
     } catch (error) {
         console.error("[euphire] Failed to remove session participant:", error.message);
     }
@@ -406,76 +473,6 @@ async function cleanupOrphanedSessions() {
     console.log(`[euphire] Cleaned up ${staleSessions.length} orphaned sessions.`);
 }
 
-/**
- * Reset profile statistics in MongoDB (e!profile only)
- * Scope: all users or a specific userId
- * Deletes from: userStats, serverStats, trackStats, sharedListening, activeSessions, sessionParticipants
- * Preserves: guildData (server settings), userData (Last.fm), sessions (bot DJ assignments)
- */
-async function resetAllProfileStats(targetUserId = null) {
-    if (!isDBConnected()) {
-        throw new Error("MongoDB is not connected.");
-    }
-    
-    const db = getDB();
-    
-    // Clear active in-memory player session references
-    try {
-        const coordinator = require('./mongoCoordinator');
-        const allClients = coordinator.getAllClients();
-        for (const client of allClients) {
-            if (client?.riffy?.players) {
-                for (const player of client.riffy.players.values()) {
-                    if (!targetUserId || player.sessionUserId === targetUserId) {
-                        player.currentSessionId = null;
-                        player.sessionStartedAt = null;
-                        player.sessionUserId = null;
-                    }
-                }
-            }
-        }
-    } catch (err) {
-        console.warn("[euphire] Warning clearing in-memory player sessions:", err.message);
-    }
-    
-    if (targetUserId) {
-        const userStats = await db.collection('userStats').deleteMany({ userId: targetUserId });
-        const serverStats = await db.collection('serverStats').deleteMany({ userId: targetUserId });
-        const trackStats = await db.collection('trackStats').deleteMany({ userId: targetUserId });
-        const shared1 = await db.collection('sharedListening').deleteMany({ userId: targetUserId });
-        const shared2 = await db.collection('sharedListening').deleteMany({ friendId: targetUserId });
-        const activeSessions = await db.collection('activeSessions').deleteMany({ userId: targetUserId });
-        const sessionParticipants = await db.collection('sessionParticipants').deleteMany({ userId: targetUserId });
-
-        return {
-            scope: targetUserId,
-            userStats: userStats.deletedCount || 0,
-            serverStats: serverStats.deletedCount || 0,
-            trackStats: trackStats.deletedCount || 0,
-            sharedListening: (shared1.deletedCount || 0) + (shared2.deletedCount || 0),
-            activeSessions: activeSessions.deletedCount || 0,
-            sessionParticipants: sessionParticipants.deletedCount || 0,
-        };
-    } else {
-        const userStats = await db.collection('userStats').deleteMany({});
-        const serverStats = await db.collection('serverStats').deleteMany({});
-        const trackStats = await db.collection('trackStats').deleteMany({});
-        const sharedListening = await db.collection('sharedListening').deleteMany({});
-        const activeSessions = await db.collection('activeSessions').deleteMany({});
-        const sessionParticipants = await db.collection('sessionParticipants').deleteMany({});
-
-        return {
-            scope: 'everyone',
-            userStats: userStats.deletedCount || 0,
-            serverStats: serverStats.deletedCount || 0,
-            trackStats: trackStats.deletedCount || 0,
-            sharedListening: sharedListening.deletedCount || 0,
-            activeSessions: activeSessions.deletedCount || 0,
-            sessionParticipants: sessionParticipants.deletedCount || 0,
-        };
-    }
-}
-
 module.exports = {
     generateSessionId,
     startSession,
@@ -488,5 +485,4 @@ module.exports = {
     getTopFriends,
     getTopTracks,
     cleanupOrphanedSessions,
-    resetAllProfileStats,
 };

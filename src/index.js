@@ -77,17 +77,6 @@ server.listen(PORT, "0.0.0.0", () => {
 });
 
 // ======================================================
-// MONGODB
-// ======================================================
-
-connectToMongoDB().catch((err) => {
-    console.warn(
-        "[euphire] MongoDB connection failed; continuing with in-memory storage:",
-        err.message
-    );
-});
-
-// ======================================================
 // CREATE DISCORD BOT INSTANCE
 // ======================================================
 
@@ -248,55 +237,78 @@ if (missingTokens.length > 0) {
     // INITIALIZE MULTI-BOT COORDINATOR
     // ======================================================
 
-    coordinator.initialize(
-        botConfigs,
-        (token, botId) => createBotInstance(token, botId),
-        (client) => client.riffy
-    );
+    (async () => {
+        try {
+            await connectToMongoDB();
+            await require("./utils/updateManager").markMaintenanceComplete();
+            await coordinator.initialize(
+                botConfigs,
+                (token, botId) => createBotInstance(token, botId),
+                (client) => client.riffy
+            );
 
-    coordinator.resetAllBotsToAvailable();
+            coordinator.resetAllBotsToAvailable();
 
-    // ======================================================
-    // LOGIN ALL BOTS
-    // ======================================================
+            // ======================================================
+            // LOGIN ALL BOTS
+            // ======================================================
 
-    for (const client of coordinator.getAllClients()) {
-        const botId = client.botId;
+            for (const client of coordinator.getAllClients()) {
+                const botId = client.botId;
+                const botConfig = botConfigs.find((bot) => bot.id === botId);
+                const token = botConfig?.token;
 
-        const botConfig = botConfigs.find((bot) => bot.id === botId);
-        const token = botConfig?.token;
+                if (!token) {
+                    console.error(`[euphire] No token found for ${botId}`);
+                    continue;
+                }
 
-        if (!token) {
-            console.error(`[euphire] No token found for ${botId}`);
-            continue;
+                client.on("ready", () => {
+                    console.log(
+                        `[euphire] ${botConfig.name} connected successfully (${botId})`
+                    );
+
+                    client.application?.emojis?.fetch?.().catch(() => {});
+                    coordinator.markBotReconnected(botId);
+
+                    const playbackRecovery = require("./utils/playbackRecovery");
+                    playbackRecovery
+                        .restoreClientSessions(client)
+                        .catch((err) => {
+                            console.error(
+                                `[euphire] Failed to restore playback sessions for ${botId}:`,
+                                err.message
+                            );
+                        })
+                        .finally(() =>
+                            playbackRecovery.startCheckpointing(client)
+                        );
+                });
+
+                client.on("shardDisconnect", () => {
+                    console.warn(`[euphire] ${botId} disconnected from Discord`);
+                    coordinator.markBotDisconnected(botId);
+                });
+
+                client.on("shardReconnecting", () => {
+                    console.log(`[euphire] ${botId} is reconnecting...`);
+                });
+
+                client.login(token).catch((err) => {
+                    console.error(
+                        `[euphire] Failed to login ${botId}:`,
+                        err.message
+                    );
+
+                    coordinator.markBotDisconnected(botId);
+                });
+            }
+        } catch (err) {
+            console.error("[euphire] Startup failed; MongoDB is required:", err);
+            server.close();
+            process.exit(1);
         }
-
-        client.on("ready", () => {
-            console.log(
-                `[euphire] ${botConfig.name} connected successfully (${botId})`
-            );
-
-            coordinator.markBotReconnected(botId);
-        });
-
-        client.on("shardDisconnect", () => {
-            console.warn(`[euphire] ${botId} disconnected from Discord`);
-            coordinator.markBotDisconnected(botId);
-        });
-
-        client.on("shardReconnecting", () => {
-            console.log(`[euphire] ${botId} is reconnecting...`);
-        });
-
-        client.login(token).catch((err) => {
-            console.error(
-                `[euphire] Failed to login ${botId}:`,
-                err.message
-            );
-
-            coordinator.markBotDisconnected(botId);
-        });
-    }
+    })();
 }
 
 // ======================================================

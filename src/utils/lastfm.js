@@ -16,7 +16,7 @@ function md5(str) {
  */
 function generateSignature(params) {
     // Sort keys alphabetically
-    const sortedKeys = Object.keys(params).sort();
+    const sortedKeys = Object.keys(params).filter(k => params[k] !== undefined && params[k] !== null).sort();
     let signatureStr = '';
     for (const key of sortedKeys) {
         signatureStr += key + params[key];
@@ -35,10 +35,18 @@ function getUserAgent() {
 /**
  * Make a request to Last.fm API
  */
-async function lastfmRequest(params, method = 'GET') {
+async function lastfmRequest(rawParams, method = 'GET') {
     if (!API_KEY || !API_SECRET) {
         console.error('[Last.fm] API key or secret not configured');
         return null;
+    }
+
+    // Clean params to remove undefined and null
+    const params = {};
+    for (const [key, val] of Object.entries(rawParams)) {
+        if (val !== undefined && val !== null && val !== '') {
+            params[key] = String(val);
+        }
     }
 
     params.api_key = API_KEY;
@@ -113,16 +121,21 @@ async function getSession(token) {
  * Update now playing for a user
  */
 async function updateNowPlaying(sessionKey, artist, track, album = null, duration = null) {
+    if (!sessionKey || !artist || !track) return null;
+
     const params = {
         method: 'track.updateNowPlaying',
         sk: sessionKey,
         artist: artist,
         track: track,
-        duration: duration ? Math.floor(duration / 1000) : undefined
     };
 
-    if (album) {
-        params.album = album;
+    if (duration && duration > 0) {
+        params.duration = String(Math.floor(duration / 1000));
+    }
+
+    if (album && typeof album === 'string' && album.trim()) {
+        params.album = album.trim();
     }
 
     const response = await lastfmRequest(params, 'POST');
@@ -133,17 +146,23 @@ async function updateNowPlaying(sessionKey, artist, track, album = null, duratio
  * Scrobble a track for a user
  */
 async function scrobble(sessionKey, artist, track, album = null, timestamp, duration = null) {
+    if (!sessionKey || !artist || !track) return null;
+
+    const ts = timestamp ? Math.floor(timestamp / 1000) : Math.floor(Date.now() / 1000);
     const params = {
         method: 'track.scrobble',
         sk: sessionKey,
         artist: artist,
         track: track,
-        timestamp: Math.floor(timestamp / 1000),
-        duration: duration ? Math.floor(duration / 1000) : undefined
+        timestamp: String(ts),
     };
 
-    if (album) {
-        params.album = album;
+    if (duration && duration > 0) {
+        params.duration = String(Math.floor(duration / 1000));
+    }
+
+    if (album && typeof album === 'string' && album.trim()) {
+        params.album = album.trim();
     }
 
     const response = await lastfmRequest(params, 'POST');

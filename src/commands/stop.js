@@ -3,6 +3,7 @@ const { getGuildData, saveGuildData, clearUpdateInterval } = require("../utils/m
 const { requireMusicAction } = require("../utils/permissions");
 const { endSession } = require("../utils/mongoStats");
 const coordinator = require("../utils/mongoCoordinator");
+const { removeSavedSession } = require("../utils/playbackRecovery");
 
 module.exports = {
     aliases: ["leave"],
@@ -16,6 +17,7 @@ module.exports = {
 
         // Clean up guild state
         const guildData = getGuildData(interaction.guild.id);
+        guildData.leaveAfterQueueEnd = false;
         
         // Release bot reservation (DJ releases ownership)
         if (player.voiceChannel) {
@@ -58,6 +60,7 @@ module.exports = {
         guildData.suggestions = [];
         guildData.previousTracks = [];
 
+        await removeSavedSession(interaction.guild.id);
         player.queue?.clear?.();
         player.stop?.();
 

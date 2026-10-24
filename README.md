@@ -54,6 +54,16 @@ docker compose logs -f euphire
 4. Copy `config.example.js` to `config.js` and configure your Lavalink server details.
    - Update `host`, `port`, `password`, and `secure` in `config.js`.
    - Ensure your Lavalink server is running and reachable.
+
+The `e!playlistsearch` command uses Spotify's Web API to find playlists. Create an application in the Spotify Developer Dashboard and add its client credentials to `.env`:
+
+```env
+SPOTIFY_CLIENT_ID=your_spotify_client_id
+SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+```
+
+Keep these values private. Add them before starting the bot:
+
 5. Start the bot:
    ```bash
    npm start

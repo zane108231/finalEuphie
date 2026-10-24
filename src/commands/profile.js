@@ -1,6 +1,6 @@
 const { MessageFlags, AttachmentBuilder, SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const { getUserStats, getTopServers, getTopFriends, getTopTracks, resetAllProfileStats } = require("../utils/mongoStats");
-const { getUserData, saveUserData } = require("../utils/mongoUserData");
+const { getUserStats, getTopServers, getTopFriends, getTopTracks } = require("../utils/mongoStats");
+const { getUserData, saveUserData, saveUserBackground, deleteUserBackground } = require("../utils/mongoUserData");
 const { generateProfileCard, loadImageFromURL } = require("../utils/profileCard");
 const { isServerAdmin } = require("../utils/permissions");
 const fs = require("fs");
@@ -62,7 +62,6 @@ async function handleSetBackground(interaction, client, args) {
     }
 
     if (!value) {
-        // Show help embed matching reference Image 3
         const embed = new EmbedBuilder()
             .setColor(config.accentColor || 0x2b2d31)
             .setTitle("Help for command: profile set background")
@@ -79,13 +78,7 @@ async function handleSetBackground(interaction, client, args) {
                 "profile set background avatar\n" +
                 "profile set background color\n" +
                 "profile set background default\n" +
-                "profile set background https://cdn.discordapp.com/attachments/.../maxresdefault.png\n" +
-                "```\n\n" +
-                "**Aliases**\n" +
-                "```\n" +
-                "set profile background\n" +
-                "profile background\n" +
-                "profile background set\n" +
+                "profile set background https://cdn.discordapp.com/attachments/.../bg.png\n" +
                 "```"
             );
         return interaction.reply({ embeds: [embed] });
@@ -100,6 +93,7 @@ async function handleSetBackground(interaction, client, args) {
         if (fs.existsSync(localFile)) {
             try { fs.unlinkSync(localFile); } catch (_) {}
         }
+        await deleteUserBackground(interaction.user.id);
         await saveUserData(interaction.user.id, userSettings);
         const embed = new EmbedBuilder()
             .setColor(config.accentColor || 0x2b2d31)
@@ -159,9 +153,14 @@ async function handleSetBackground(interaction, client, args) {
         });
     }
 
-    // Save locally on disk so it NEVER expires!
+    // Save to MongoDB permanently across all bots and restarts
+    await saveUserBackground(interaction.user.id, imgBuffer);
+
+    // Save locally on disk as fast cache
     const localFile = path.join(BG_DIR, `${interaction.user.id}.png`);
-    fs.writeFileSync(localFile, imgBuffer);
+    try {
+        fs.writeFileSync(localFile, imgBuffer);
+    } catch (_) {}
 
     userSettings.profileBackground = "custom";
     await saveUserData(interaction.user.id, userSettings);
@@ -170,7 +169,7 @@ async function handleSetBackground(interaction, client, args) {
     const embed = new EmbedBuilder()
         .setColor(config.accentColor || 0x2b2d31)
         .setTitle("✅ Profile Background Updated")
-        .setDescription("Your custom background has been saved permanently! Use `e!profile` to view your new card.")
+        .setDescription("Your custom background has been saved permanently to MongoDB! It will stay consistent across all bots and servers. Use `e!profile` to view your new card.")
         .setImage("attachment://background-preview.png");
 
     return interaction.editReply({ embeds: [embed], files: [attachmentPreview] });
@@ -182,21 +181,312 @@ async function handleSetBackground(interaction, client, args) {
 async function handleSetColor(interaction, client, args) {
     const colorArg = (args[0] || "").trim();
     if (!colorArg || !/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(colorArg)) {
-        return interaction.reply({
-            content: "❌ Please provide a valid hex color code (e.g. `e!profile set color #5865F2` or `e!profile set color #1e1f22`).",
-            flags: MessageFlags.Ephemeral,
-        });
+        const embed = new EmbedBuilder()
+            .setColor(config.accentColor || 0x2b2d31)
+            .setTitle("Help for command: profile set color")
+            .setDescription(
+                "Set your profile color.\n\n" +
+                "**Usage**\n" +
+                "```\ne!profile set color <color>\n```\n\n" +
+                "**Examples**\n" +
+                "```\n" +
+                "profile set color #5865F2\n" +
+                "profile set color #1e1f22\n" +
+                "profile set color #ff0000\n" +
+                "```"
+            );
+        return interaction.reply({ embeds: [embed] });
     }
 
     const hex = colorArg.startsWith("#") ? colorArg : `#${colorArg}`;
     const userSettings = await getUserData(interaction.user.id);
     userSettings.profileColor = hex;
-    userSettings.profileBackground = "color";
     await saveUserData(interaction.user.id, userSettings);
 
     const embed = new EmbedBuilder()
         .setColor(config.accentColor || 0x2b2d31)
-        .setDescription(`✅ Profile color set to **${hex}** (background switched to plain color). Use \`e!profile\` to view your card.`);
+        .setDescription(`✅ Profile color set to **${hex}**. Use \`e!profile\` to view your card.`);
+
+    return interaction.reply({ embeds: [embed] });
+}
+
+/**
+ * Handle e!profile set privacy <servers|friends|tracks|all> <show|hide>
+ */
+async function handleSetPrivacy(interaction, client, args) {
+    const targetPart = (args[0] || "").toLowerCase().trim();
+    const action = (args[1] || "").toLowerCase().trim();
+
+    const userSettings = await getUserData(interaction.user.id);
+    if (!userSettings.profilePrivacy) {
+        userSettings.profilePrivacy = { servers: true, friends: true, tracks: true };
+    }
+
+    if (!targetPart || !["servers", "friends", "tracks", "all"].includes(targetPart)) {
+        const s = userSettings.profilePrivacy.servers !== false ? "Visible" : "Hidden";
+        const f = userSettings.profilePrivacy.friends !== false ? "Visible" : "Hidden";
+        const t = userSettings.profilePrivacy.tracks !== false ? "Visible" : "Hidden";
+
+        const embed = new EmbedBuilder()
+            .setColor(config.accentColor || 0x2b2d31)
+            .setTitle("Help for command: profile set privacy")
+            .setDescription(
+                "Set what parts (servers, friends and tracks) are visible on your profile.\n\n" +
+                "**Current Privacy Settings**\n" +
+                `• **Servers**: ${s}\n` +
+                `• **Friends**: ${f}\n` +
+                `• **Tracks**: ${t}\n\n` +
+                "**Usage**\n" +
+                "```\ne!profile set privacy <servers | friends | tracks | all> <show | hide>\n```\n\n" +
+                "**Examples**\n" +
+                "```\n" +
+                "profile set privacy tracks hide\n" +
+                "profile set privacy friends show\n" +
+                "profile set privacy all hide\n" +
+                "```"
+            );
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    const isVisible = ["show", "visible", "public", "on", "true", "yes"].includes(action);
+    const isHidden = ["hide", "hidden", "private", "off", "false", "no"].includes(action);
+
+    if (!isVisible && !isHidden) {
+        return interaction.reply({
+            content: "❌ Please specify `show` or `hide` (e.g. `e!profile set privacy tracks hide`).",
+            flags: MessageFlags.Ephemeral,
+        });
+    }
+
+    const stateVal = isVisible;
+
+    if (targetPart === "all") {
+        userSettings.profilePrivacy.servers = stateVal;
+        userSettings.profilePrivacy.friends = stateVal;
+        userSettings.profilePrivacy.tracks = stateVal;
+    } else {
+        userSettings.profilePrivacy[targetPart] = stateVal;
+    }
+
+    await saveUserData(interaction.user.id, userSettings);
+
+    const embed = new EmbedBuilder()
+        .setColor(config.accentColor || 0x2b2d31)
+        .setDescription(`✅ Profile privacy for **${targetPart}** set to **${stateVal ? "Visible" : "Hidden"}**.`);
+
+    return interaction.reply({ embeds: [embed] });
+}
+
+/**
+ * Handle e!profile set visibility <public | private>
+ */
+async function handleSetVisibility(interaction, client, args) {
+    const val = (args[0] || "").toLowerCase().trim();
+    const userSettings = await getUserData(interaction.user.id);
+
+    if (!["public", "private"].includes(val)) {
+        const current = userSettings.profileVisibility || "public";
+        const embed = new EmbedBuilder()
+            .setColor(config.accentColor || 0x2b2d31)
+            .setTitle("Help for command: profile set visibility")
+            .setDescription(
+                "Set who can view your profile, `public` or `private`.\n\n" +
+                `**Current Setting**: \`${current}\`\n\n` +
+                "**Usage**\n" +
+                "```\ne!profile set visibility <public | private>\n```\n\n" +
+                "**Examples**\n" +
+                "```\n" +
+                "profile set visibility public\n" +
+                "profile set visibility private\n" +
+                "```"
+            );
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    userSettings.profileVisibility = val;
+    await saveUserData(interaction.user.id, userSettings);
+
+    const embed = new EmbedBuilder()
+        .setColor(config.accentColor || 0x2b2d31)
+        .setDescription(`✅ Profile visibility set to **${val}**.`);
+
+    return interaction.reply({ embeds: [embed] });
+}
+
+/**
+ * Handle e!profile set avatar shape <circle | square>
+ */
+async function handleSetAvatarShape(interaction, client, args) {
+    const shape = (args[0] || "").toLowerCase().trim();
+    const userSettings = await getUserData(interaction.user.id);
+
+    if (!["circle", "square"].includes(shape)) {
+        const current = userSettings.avatarShape || "circle";
+        const embed = new EmbedBuilder()
+            .setColor(config.accentColor || 0x2b2d31)
+            .setTitle("Help for command: profile set avatar shape")
+            .setDescription(
+                "Set your profile avatar shape, `circle` or `square`.\n\n" +
+                `**Current Setting**: \`${current}\`\n\n` +
+                "**Usage**\n" +
+                "```\ne!profile set avatar shape <circle | square>\n```\n\n" +
+                "**Examples**\n" +
+                "```\n" +
+                "profile set avatar shape circle\n" +
+                "profile set avatar shape square\n" +
+                "```"
+            );
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    userSettings.avatarShape = shape;
+    await saveUserData(interaction.user.id, userSettings);
+
+    const embed = new EmbedBuilder()
+        .setColor(config.accentColor || 0x2b2d31)
+        .setDescription(`✅ Profile avatar shape set to **${shape}**. Use \`e!profile\` to view your card.`);
+
+    return interaction.reply({ embeds: [embed] });
+}
+
+/**
+ * Handle e!profile set avatar border <color | none | default>
+ */
+async function handleSetAvatarBorder(interaction, client, args) {
+    const border = (args[0] || "").toLowerCase().trim();
+    const userSettings = await getUserData(interaction.user.id);
+
+    if (!border) {
+        const current = userSettings.avatarBorder || "default";
+        const embed = new EmbedBuilder()
+            .setColor(config.accentColor || 0x2b2d31)
+            .setTitle("Help for command: profile set avatar border")
+            .setDescription(
+                "Set your profile avatar border.\n\n" +
+                `**Current Setting**: \`${current}\`\n\n` +
+                "**Usage**\n" +
+                "```\ne!profile set avatar border <color | none | default>\n```\n\n" +
+                "**Examples**\n" +
+                "```\n" +
+                "profile set avatar border #5865F2\n" +
+                "profile set avatar border none\n" +
+                "profile set avatar border default\n" +
+                "```"
+            );
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    if (border === "none") {
+        userSettings.avatarBorder = "none";
+    } else if (border === "default" || border === "reset") {
+        userSettings.avatarBorder = null;
+    } else if (/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(border)) {
+        userSettings.avatarBorder = border.startsWith("#") ? border : `#${border}`;
+    } else {
+        return interaction.reply({
+            content: "❌ Please provide a valid hex color code (e.g. `#5865F2`), `none`, or `default`.",
+            flags: MessageFlags.Ephemeral,
+        });
+    }
+
+    await saveUserData(interaction.user.id, userSettings);
+
+    const embed = new EmbedBuilder()
+        .setColor(config.accentColor || 0x2b2d31)
+        .setDescription(`✅ Profile avatar border set to **${userSettings.avatarBorder || "default"}**. Use \`e!profile\` to view your card.`);
+
+    return interaction.reply({ embeds: [embed] });
+}
+
+/**
+ * Handle e!profile set server visibility <public | private>
+ */
+async function handleSetServerVisibility(interaction, client, args) {
+    const val = (args[0] || "").toLowerCase().trim();
+    const guildId = interaction.guild?.id;
+    if (!guildId) {
+        return interaction.reply({
+            content: "❌ This command must be used in a server.",
+            flags: MessageFlags.Ephemeral,
+        });
+    }
+
+    const userSettings = await getUserData(interaction.user.id);
+    if (!userSettings.serverVisibility) {
+        userSettings.serverVisibility = {};
+    }
+
+    if (!["public", "private"].includes(val)) {
+        const current = userSettings.serverVisibility[guildId] || "public";
+        const embed = new EmbedBuilder()
+            .setColor(config.accentColor || 0x2b2d31)
+            .setTitle("Help for command: profile set server visibility")
+            .setDescription(
+                "Set who can view profile data from this server, `public` or `private`.\n\n" +
+                `**Current Setting for ${interaction.guild.name}**: \`${current}\`\n\n` +
+                "**Usage**\n" +
+                "```\ne!profile set server visibility <public | private>\n```\n\n" +
+                "**Examples**\n" +
+                "```\n" +
+                "profile set server visibility public\n" +
+                "profile set server visibility private\n" +
+                "```"
+            );
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    userSettings.serverVisibility[guildId] = val;
+    await saveUserData(interaction.user.id, userSettings);
+
+    const embed = new EmbedBuilder()
+        .setColor(config.accentColor || 0x2b2d31)
+        .setDescription(`✅ Profile data visibility for this server (**${interaction.guild.name}**) set to **${val}**.`);
+
+    return interaction.reply({ embeds: [embed] });
+}
+
+/**
+ * Handle e!profile set avatar background <color | default>
+ */
+async function handleSetAvatarBackground(interaction, client, args) {
+    const val = (args[0] || "").toLowerCase().trim();
+    const userSettings = await getUserData(interaction.user.id);
+
+    if (!val) {
+        const current = userSettings.avatarBackground || "default";
+        const embed = new EmbedBuilder()
+            .setColor(config.accentColor || 0x2b2d31)
+            .setTitle("Help for command: profile set avatar background")
+            .setDescription(
+                "Set your profile avatar background.\n\n" +
+                `**Current Setting**: \`${current}\`\n\n` +
+                "**Usage**\n" +
+                "```\ne!profile set avatar background <color | default>\n```\n\n" +
+                "**Examples**\n" +
+                "```\n" +
+                "profile set avatar background #000000\n" +
+                "profile set avatar background default\n" +
+                "```"
+            );
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    if (val === "default" || val === "reset") {
+        userSettings.avatarBackground = null;
+    } else if (/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(val)) {
+        userSettings.avatarBackground = val.startsWith("#") ? val : `#${val}`;
+    } else {
+        return interaction.reply({
+            content: "❌ Please provide a valid hex color code (e.g. `#000000`) or `default`.",
+            flags: MessageFlags.Ephemeral,
+        });
+    }
+
+    await saveUserData(interaction.user.id, userSettings);
+
+    const embed = new EmbedBuilder()
+        .setColor(config.accentColor || 0x2b2d31)
+        .setDescription(`✅ Profile avatar background set to **${userSettings.avatarBackground || "default"}**. Use \`e!profile\` to view your card.`);
 
     return interaction.reply({ embeds: [embed] });
 }
@@ -205,15 +495,15 @@ module.exports = {
     aliases: ["user", "profile-background"],
     data: new SlashCommandBuilder()
         .setName("profile")
-        .setDescription("View your music listening statistics profile or customize background")
+        .setDescription("View your music listening statistics profile or customize settings")
         .addStringOption((opt) =>
             opt.setName("action")
-                .setDescription("Action ('set', 'reset', or leave blank to view profile)")
+                .setDescription("Action (set, or leave blank to view profile)")
                 .setRequired(false)
         )
         .addStringOption((opt) =>
             opt.setName("target")
-                .setDescription("Target setting or user to reset")
+                .setDescription("Target setting")
                 .setRequired(false)
         )
         .addUserOption((opt) =>
@@ -232,20 +522,53 @@ module.exports = {
             ""
         ).toLowerCase();
 
-        // Check for "set" subcommands: e!profile set background <url> / e!profile set color <hex>
+        // Check for "set" subcommands:
+        // profile set color
+        // profile set privacy
+        // profile set background
+        // profile set visibility
+        // profile set avatar shape
+        // profile set avatar border
+        // profile set server visibility
+        // profile set avatar background
         if (firstArg === "set") {
             const subAction = (rawArgs[1] || "").toLowerCase();
-            if (subAction === "background" || subAction === "bg") {
-                return await handleSetBackground(interaction, client, rawArgs.slice(2));
-            }
+            const thirdArg = (rawArgs[2] || "").toLowerCase();
+
             if (subAction === "color" || subAction === "colour") {
                 return await handleSetColor(interaction, client, rawArgs.slice(2));
             }
-            // If just "e!profile set", show background help by default
-            return await handleSetBackground(interaction, client, []);
+            if (subAction === "privacy") {
+                return await handleSetPrivacy(interaction, client, rawArgs.slice(2));
+            }
+            if (subAction === "background" || subAction === "bg") {
+                return await handleSetBackground(interaction, client, rawArgs.slice(2));
+            }
+            if (subAction === "visibility") {
+                return await handleSetVisibility(interaction, client, rawArgs.slice(2));
+            }
+            if (subAction === "server" && (thirdArg === "visibility" || thirdArg === "vis")) {
+                return await handleSetServerVisibility(interaction, client, rawArgs.slice(3));
+            }
+            if (subAction === "avatar") {
+                if (thirdArg === "shape") {
+                    return await handleSetAvatarShape(interaction, client, rawArgs.slice(3));
+                }
+                if (thirdArg === "border") {
+                    return await handleSetAvatarBorder(interaction, client, rawArgs.slice(3));
+                }
+                if (thirdArg === "background" || thirdArg === "bg") {
+                    return await handleSetAvatarBackground(interaction, client, rawArgs.slice(3));
+                }
+            }
+
+            // If just "e!profile set", show general profile help
+            const helpCommand = require("./help");
+            interaction.args = ["profile"];
+            return await helpCommand.execute(interaction, client);
         }
 
-        // Direct aliases: e!profile background <url> / e!profile bg <url>
+        // Direct aliases without "set":
         if (firstArg === "background" || firstArg === "bg") {
             const nextArg = (rawArgs[1] || "").toLowerCase();
             if (nextArg === "set") {
@@ -254,95 +577,23 @@ module.exports = {
             return await handleSetBackground(interaction, client, rawArgs.slice(1));
         }
 
-        // Direct alias: e!profile color <hex>
         if (firstArg === "color" || firstArg === "colour") {
             return await handleSetColor(interaction, client, rawArgs.slice(1));
         }
 
-        // Check for reset action (e!profile reset / e!profile reset all / e!profile reset me / e!profile reset @user)
-        if (firstArg === "reset" || firstArg === "clear") {
-            const secondArg = (
-                rawArgs[1] ||
-                interaction.options?.getString?.("target") ||
-                ""
-            ).trim();
+        if (firstArg === "privacy") {
+            return await handleSetPrivacy(interaction, client, rawArgs.slice(1));
+        }
 
-            const isAdmin =
-                !interaction.guild ||
-                interaction.guild?.ownerId === interaction.user?.id ||
-                isServerAdmin(interaction.member);
-
-            let targetUserId = null;
-            let targetLabel = "Everyone (All users & servers)";
-
-            if (!secondArg || ["all", "everyone", "global", "*"].includes(secondArg.toLowerCase())) {
-                if (!isAdmin) {
-                    return interaction.reply({
-                        content: "❌ Only server administrators can reset profile statistics for everyone. Use `e!profile reset me` to reset only your own statistics.",
-                        flags: MessageFlags.Ephemeral,
-                    });
-                }
-                targetUserId = null;
-                targetLabel = "Everyone (All users & servers)";
-            } else if (["me", "self"].includes(secondArg.toLowerCase())) {
-                targetUserId = interaction.user.id;
-                targetLabel = `<@${interaction.user.id}> (${interaction.user.tag || interaction.user.username})`;
-            } else {
-                const mentionMatch = secondArg.match(/^<@!?(\d{17,20})>$/);
-                const rawId = mentionMatch ? mentionMatch[1] : (/^\d{17,20}$/.test(secondArg) ? secondArg : null);
-
-                if (rawId) {
-                    if (!isAdmin && rawId !== interaction.user.id) {
-                        return interaction.reply({
-                            content: "❌ Only server administrators can reset profile statistics for other users.",
-                            flags: MessageFlags.Ephemeral,
-                        });
-                    }
-                    targetUserId = rawId;
-                    targetLabel = `<@${rawId}>`;
-                } else {
-                    return interaction.reply({
-                        content: "❌ Invalid target. Usage:\n• `e!profile reset` or `e!profile reset all` (Admin only: resets everyone)\n• `e!profile reset me` (Resets your own stats)\n• `e!profile reset @user` (Admin only: resets specific user)",
-                        flags: MessageFlags.Ephemeral,
-                    });
-                }
-            }
-
-            try {
-                await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-            } catch {
-                // Ignore if defer fails
-            }
-
-            try {
-                const result = await resetAllProfileStats(targetUserId);
-
-                const summaryText =
-                    "### 🧹 Profile Database Reset\n\n" +
-                    `**Scope**: ${targetLabel}\n` +
-                    `• **User Stats cleared**: \`${result.userStats}\`\n` +
-                    `• **Server Stats cleared**: \`${result.serverStats}\`\n` +
-                    `• **Friend Stats cleared**: \`${result.friendStats}\`\n` +
-                    `• **Track Stats cleared**: \`${result.trackStats}\`\n` +
-                    `• **Active Sessions cleared**: \`${result.activeSessions}\`\n\n` +
-                    "All requested statistics have been reset.";
-
-                return interaction.editReply({
-                    content: summaryText,
-                });
-            } catch (err) {
-                console.error("[euphire] Failed to reset profile database:", err);
-                return interaction.editReply({
-                    content: `❌ An error occurred while resetting profile statistics: ${err.message}`,
-                });
-            }
+        if (firstArg === "visibility") {
+            return await handleSetVisibility(interaction, client, rawArgs.slice(1));
         }
 
         // View Profile flow
         let targetUser = interaction.options?.getUser?.("user");
         if (!targetUser && rawArgs.length > 0) {
             const rawUserArg = rawArgs[0];
-            if (rawUserArg && !["reset", "clear", "set", "background", "bg", "color", "colour"].includes(rawUserArg.toLowerCase())) {
+            if (rawUserArg && !["set", "background", "bg", "color", "colour", "privacy", "visibility"].includes(rawUserArg.toLowerCase())) {
                 const mentionMatch = rawUserArg.match(/^<@!?(\d{17,20})>$/);
                 const rawId = mentionMatch ? mentionMatch[1] : (/^\d{17,20}$/.test(rawUserArg) ? rawUserArg : null);
                 if (rawId) {
@@ -352,6 +603,17 @@ module.exports = {
         }
         if (!targetUser) {
             targetUser = interaction.user;
+        }
+
+        // Check target user visibility if viewing someone else
+        if (targetUser.id !== interaction.user.id) {
+            const targetData = await getUserData(targetUser.id);
+            if (targetData.profileVisibility === "private") {
+                const embed = new EmbedBuilder()
+                    .setColor(0x2b2d31)
+                    .setDescription("🔒 This user's profile is set to **private**.");
+                return interaction.reply({ embeds: [embed] });
+            }
         }
 
         const key = `${guildId}-${targetUser.id}`;
@@ -423,5 +685,11 @@ module.exports = {
     },
 
     handleSetBackground,
-    handleSetColor
+    handleSetColor,
+    handleSetPrivacy,
+    handleSetVisibility,
+    handleSetAvatarShape,
+    handleSetAvatarBorder,
+    handleSetServerVisibility,
+    handleSetAvatarBackground,
 };

@@ -211,7 +211,7 @@ async function announceNowPlaying(client, player, track, guildData) {
     }
 
     // No musicard generation - removed
-    const container = createNowPlayingContainer(track, player, guildData, null);
+    const container = createNowPlayingContainer(track, player, guildData, null, client);
     const channel = resolveNowPlayingChannel(client, player, guildData);
 
     if (!channel) {
@@ -343,7 +343,26 @@ function setupPlayerHandler(client) {
             }
 
             const guildData = getGuildData(player.guildId);
+            await require("../utils/playbackRecovery")
+                .saveRecentlyPlayedTrack(track)
+                .catch((err) => {
+                    console.error(
+                        `[euphire] Failed to save recently played track for guild ${player.guildId}:`,
+                        err.message
+                    );
+                });
+            await require("../utils/playbackRecovery")
+                .persistPlayer(client, player)
+                .catch((err) => {
+                    console.error(
+                        `[euphire] Failed to persist playback session for ${player.guildId}:`,
+                        err.message
+                    );
+                });
             guildData.cannotSendPlayer = false;
+            player.skipVotes = new Set();
+            const { clearPlayerIdleTimeout } = require("../utils/playback");
+            clearPlayerIdleTimeout(player, guildData);
 
             // Fallback: if previous track session was still open (e.g. trackEnd didn't fire), commit it naturally now!
             if (player.currentSessionId) {
@@ -368,61 +387,86 @@ function setupPlayerHandler(client) {
                 }
             }
 
-            // Last.fm scrobbling: update now playing for all users in VC
+            // Last.fm scrobbling: update now playing for all users in VC (including temp VCs and requester)
             try {
-                const voiceChannel = client.channels.cache.get(player.voiceChannel);
-                if (voiceChannel) {
-                    const trackInfo = track.info;
-                    const artist = trackInfo.author || "Unknown";
-                    const trackName = trackInfo.title || "Unknown";
-                    const album = trackInfo.album || null;
-                    const duration = trackInfo.length || 0;
+                let voiceChannel = client.channels.cache.get(player.voiceChannel);
+                if (!voiceChannel && player.voiceChannel) {
+                    voiceChannel = await client.channels.fetch(player.voiceChannel).catch(() => null);
+                }
 
-                    // Get all non-bot users in the voice channel
-                    const members = voiceChannel.members.filter(m => !m.user.bot);
-                    for (const [memberId, member] of members) {
-                        const userData = await getUserData(memberId);
-                        if (userData.lastfmSessionKey) {
-                            // Update now playing
-                            await updateNowPlaying(
-                                userData.lastfmSessionKey,
-                                artist,
-                                trackName,
-                                album,
-                                duration
-                            );
-                            console.log(`[Last.fm] Updated now playing for ${userData.lastfmUsername}: ${trackName}`);
+                const trackInfo = track.info || {};
+                let artist = trackInfo.author || "Unknown";
+                let trackName = trackInfo.title || "Unknown";
+                if ((artist === "Unknown" || artist.includes("- Topic")) && trackName.includes(" - ")) {
+                    const parts = trackName.split(" - ");
+                    if (parts.length >= 2) {
+                        artist = parts[0].trim();
+                        trackName = parts.slice(1).join(" - ").trim();
+                    }
+                }
+                const album = trackInfo.album || null;
+                const duration = trackInfo.length || 0;
 
-                            // Set up scrobble timer (50% of duration or 4 minutes, whichever comes first)
-                            const scrobbleDelay = Math.min(
-                                duration * 0.5,
-                                4 * 60 * 1000 // 4 minutes
-                            );
-
-                            // Clear existing timer for this user
-                            if (scrobbleTimers.has(memberId)) {
-                                clearTimeout(scrobbleTimers.get(memberId));
-                            }
-
-                            // Set new scrobble timer
-                            const timer = setTimeout(async () => {
-                                try {
-                                    await scrobble(
-                                        userData.lastfmSessionKey,
-                                        artist,
-                                        trackName,
-                                        album,
-                                        Date.now(),
-                                        duration
-                                    );
-                                    console.log(`[Last.fm] Scrobbled for ${userData.lastfmUsername}: ${trackName}`);
-                                } catch (err) {
-                                    console.error(`[Last.fm] Scrobble failed for ${userData.lastfmUsername}:`, err.message);
-                                }
-                            }, scrobbleDelay);
-
-                            scrobbleTimers.set(memberId, timer);
+                // Collect all listeners in VC (temp VC safe) plus requester
+                const targetUserIds = new Set();
+                if (voiceChannel?.members) {
+                    for (const [mId, m] of voiceChannel.members) {
+                        if (!m.user?.bot) targetUserIds.add(mId);
+                    }
+                }
+                if (voiceChannel?.guild?.voiceStates?.cache) {
+                    for (const [vId, vs] of voiceChannel.guild.voiceStates.cache) {
+                        if (vs.channelId === player.voiceChannel) {
+                            const member = vs.member || voiceChannel.guild.members.cache.get(vId);
+                            if (!member?.user?.bot) targetUserIds.add(vId);
                         }
+                    }
+                }
+                const reqId = track?.info?.requester?.id || (typeof track?.info?.requester === 'string' ? track?.info?.requester : null) || player.requesterId;
+                if (reqId) targetUserIds.add(reqId);
+
+                for (const memberId of targetUserIds) {
+                    const userData = await getUserData(memberId);
+                    if (userData.lastfmSessionKey) {
+                        // Update now playing
+                        await updateNowPlaying(
+                            userData.lastfmSessionKey,
+                            artist,
+                            trackName,
+                            album,
+                            duration
+                        );
+                        console.log(`[Last.fm] Updated now playing for ${userData.lastfmUsername}: ${trackName} by ${artist}`);
+
+                        // Set up scrobble timer (50% of duration or 4 minutes, whichever comes first)
+                        const scrobbleDelay = Math.min(
+                            duration * 0.5,
+                            4 * 60 * 1000 // 4 minutes
+                        );
+
+                        // Clear existing timer for this user
+                        if (scrobbleTimers.has(memberId)) {
+                            clearTimeout(scrobbleTimers.get(memberId));
+                        }
+
+                        // Set new scrobble timer
+                        const timer = setTimeout(async () => {
+                            try {
+                                await scrobble(
+                                    userData.lastfmSessionKey,
+                                    artist,
+                                    trackName,
+                                    album,
+                                    Date.now(),
+                                    duration
+                                );
+                                console.log(`[Last.fm] Scrobbled for ${userData.lastfmUsername}: ${trackName}`);
+                            } catch (err) {
+                                console.error(`[Last.fm] Scrobble failed for ${userData.lastfmUsername}:`, err.message);
+                            }
+                        }, scrobbleDelay);
+
+                        scrobbleTimers.set(memberId, timer);
                     }
                 }
             } catch (err) {
@@ -460,11 +504,28 @@ function setupPlayerHandler(client) {
                     // Add current voice channel members as participants
                     const voiceChannel = client.channels.cache.get(player.voiceChannel);
                     if (voiceChannel) {
-                        voiceChannel.members.forEach((member) => {
-                            if (!member.user.bot && member.id !== userId) {
-                                addSessionParticipant(sessionId, member.id);
-                            }
-                        });
+                        const participantIds = new Set();
+                        if (voiceChannel.members) {
+                            voiceChannel.members.forEach((member) => {
+                                if (!member.user?.bot && member.id !== userId) {
+                                    participantIds.add(member.id);
+                                }
+                            });
+                        }
+                        const guild = client.guilds.cache.get(player.guildId);
+                        if (guild?.voiceStates?.cache) {
+                            guild.voiceStates.cache.forEach((vs, memberId) => {
+                                if (vs.channelId === player.voiceChannel && memberId !== client.user?.id && memberId !== userId) {
+                                    const m = vs.member || guild.members.cache.get(memberId);
+                                    if (!m?.user?.bot) {
+                                        participantIds.add(memberId);
+                                    }
+                                }
+                            });
+                        }
+                        for (const pId of participantIds) {
+                            addSessionParticipant(sessionId, pId).catch(() => {});
+                        }
                     }
                 } else {
                     console.log(`[euphire] [${client.botId}] No requester found for track, not starting stats session`);
@@ -492,20 +553,67 @@ function setupPlayerHandler(client) {
             const guildData = getGuildData(player.guildId);
 
             console.log("[euphire] trackEnd event fired for track:", track?.info?.title);
+            let queueUpdated = false;
+            if (
+                guildData.removeAfterPlayed &&
+                String(payload?.reason || "").toLowerCase() === "finished" &&
+                track?.info?.uri
+            ) {
+                const repeatedIndex = Array.from(player.queue || []).findIndex(
+                    (queuedTrack) => queuedTrack.info?.uri === track.info.uri
+                );
+                if (repeatedIndex !== -1) {
+                    player.queue.splice(repeatedIndex, 1);
+                    queueUpdated = true;
+                }
+            }
+            if (guildData.shuffleRepeat && player.loop === "queue" && player.queue?.length > 1) {
+                player.queue.shuffle();
+                queueUpdated = true;
+            }
+            if (queueUpdated) {
+                await require("../utils/playbackRecovery").persistPlayer(client, player);
+            }
 
             // Last.fm scrobbling: scrobble for all users in VC
             try {
-                const voiceChannel = client.channels.cache.get(player.voiceChannel);
-                if (voiceChannel && track) {
-                    const trackInfo = track.info;
-                    const artist = trackInfo.author || "Unknown";
-                    const trackName = trackInfo.title || "Unknown";
+                let voiceChannel = client.channels.cache.get(player.voiceChannel);
+                if (!voiceChannel && player.voiceChannel) {
+                    voiceChannel = await client.channels.fetch(player.voiceChannel).catch(() => null);
+                }
+
+                if (track) {
+                    const trackInfo = track.info || {};
+                    let artist = trackInfo.author || "Unknown";
+                    let trackName = trackInfo.title || "Unknown";
+                    if ((artist === "Unknown" || artist.includes("- Topic")) && trackName.includes(" - ")) {
+                        const parts = trackName.split(" - ");
+                        if (parts.length >= 2) {
+                            artist = parts[0].trim();
+                            trackName = parts.slice(1).join(" - ").trim();
+                        }
+                    }
                     const album = trackInfo.album || null;
                     const duration = trackInfo.length || 0;
 
-                    // Get all non-bot users in the voice channel
-                    const members = voiceChannel.members.filter(m => !m.user.bot);
-                    for (const [memberId, member] of members) {
+                    const targetUserIds = new Set();
+                    if (voiceChannel?.members) {
+                        for (const [mId, m] of voiceChannel.members) {
+                            if (!m.user?.bot) targetUserIds.add(mId);
+                        }
+                    }
+                    if (voiceChannel?.guild?.voiceStates?.cache) {
+                        for (const [vId, vs] of voiceChannel.guild.voiceStates.cache) {
+                            if (vs.channelId === player.voiceChannel) {
+                                const member = vs.member || voiceChannel.guild.members.cache.get(vId);
+                                if (!member?.user?.bot) targetUserIds.add(vId);
+                            }
+                        }
+                    }
+                    const reqId = track?.info?.requester?.id || (typeof track?.info?.requester === 'string' ? track?.info?.requester : null) || player.requesterId;
+                    if (reqId) targetUserIds.add(reqId);
+
+                    for (const memberId of targetUserIds) {
                         const userData = await getUserData(memberId);
                         if (userData.lastfmSessionKey) {
                             // Clear pending scrobble timer
@@ -616,75 +724,44 @@ function setupPlayerHandler(client) {
             // Resolve the specific channel assigned to this bot and its DJ
             const assignedChannel = resolveAssignedChannel(client, player, guildData);
 
-            // Clear any previous idle timeout
-            if (player.idleTimeout) {
-                clearTimeout(player.idleTimeout);
-                player.idleTimeout = null;
+            if (guildData.leaveAfterQueueEnd) {
+                guildData.leaveAfterQueueEnd = false;
+                await saveGuildData(player.guildId, guildData);
+                await require("../utils/playbackRecovery")
+                    .removeSavedSession(player.guildId)
+                    .catch((err) => {
+                        console.error(
+                            `[euphire] Failed to clear playback snapshot after playqueue for ${player.guildId}:`,
+                            err.message
+                        );
+                    });
+                stopVoiceChannelMonitoring(player.guildId);
+                await coordinator.releaseBot(player.voiceChannel);
+                player.destroy();
+                return;
             }
-            if (guildData.idleTimeout) {
-                clearTimeout(guildData.idleTimeout);
-                guildData.idleTimeout = null;
+
+            // Autoplay check: if autoplay is enabled, generate and play recommendation
+            if (guildData.autoplay) {
+                const { handleAutoplay } = require("../utils/autoplay");
+                const autoplayStarted = await handleAutoplay(client, player, guildData, resolveAssignedChannel);
+                if (autoplayStarted) {
+                    console.log(`[euphire] Autoplay successfully queued and started next track in guild ${player.guildId}`);
+                    return;
+                }
             }
 
             // Set 3-minute idle timeout before leaving
-            console.log(`[euphire] Queue ended, setting 3-minute idle timeout for bot ${client.botId} in voice channel ${player.voiceChannel}`);
-            player.idleTimeout = setTimeout(async () => {
-                console.log(`[euphire] Idle timeout reached, bot ${client.botId} leaving voice channel ${player.voiceChannel}`);
-
-                // Check if bot is still in the voice channel
-                const botMember = client.guilds.cache.get(player.guildId)?.members.cache.get(client.user.id);
-                const currentVoiceChannel = botMember?.voice?.channel;
-
-                if (!currentVoiceChannel || currentVoiceChannel.id !== player.voiceChannel) {
-                    console.log(`[euphire] Bot ${client.botId} is no longer in the expected voice channel, skipping idle disconnect`);
-                    player.idleTimeout = null;
-                    return;
-                }
-
-                // Send leaving message to the assigned channel with the DJ
-                const targetLeaveChannel = resolveAssignedChannel(client, player, guildData);
-                if (targetLeaveChannel) {
-                    try {
-                        const leaveEmbed = new EmbedBuilder()
-                            .setColor(0xED4245)
-                            .setDescription("No tracks have been playing for the past 3 minutes, leaving :wave:");
-
-                        await targetLeaveChannel.send({
-                            embeds: [leaveEmbed],
-                        });
-                    } catch (err) {
-                        console.error("[euphire] Failed to send leaving message:", err.message);
-                    }
-                }
-
-                // End session if still active
-                if (player.currentSessionId) {
-                    const listenedMs = player.position || (player.sessionStartedAt ? Date.now() - player.sessionStartedAt : 0);
-                    await endSession(player.currentSessionId, false, listenedMs).catch(() => {});
-                    player.currentSessionId = null;
-                }
-
-                // Release bot and leave
-                if (player.voiceChannel) {
-                    await coordinator.releaseBot(player.voiceChannel);
-                }
-                if (coordinator.botSessions.has(client.botId)) {
-                    for (const vcId of [...coordinator.botSessions.get(client.botId)]) {
-                        await coordinator.releaseBot(vcId);
-                    }
-                }
-                coordinator.markBotAvailable(client.botId);
-                guildData.djOwnerId = null;
-                player.destroy();
-                player.idleTimeout = null;
-
-                // Clear player message if it belonged to this channel
-                if (targetLeaveChannel && guildData.playerChannelId === targetLeaveChannel.id) {
-                    guildData.playerMessageId = null;
-                    guildData.playerChannelId = null;
-                    await saveGuildData(player.guildId, guildData);
-                }
-            }, 3 * 60 * 1000); // 3 minutes
+            const { setPlayerIdleTimeout } = require("../utils/playback");
+            await require("../utils/playbackRecovery")
+                .removeSavedSession(player.guildId)
+                .catch((err) => {
+                    console.error(
+                        `[euphire] Failed to clear completed playback session for ${player.guildId}:`,
+                        err.message
+                    );
+                });
+            setPlayerIdleTimeout(client, player, guildData, "idle");
 
             // If this is a ChatPlay session, edit the message to idle state
             if (guildData.chatPlayChannelId && guildData.chatPlayMessageId) {
@@ -837,14 +914,14 @@ function setupPlayerHandler(client) {
             if (freshGuildData.currentSessionId) {
                 console.log("[euphire] trackStuck: ending session (stuck)");
                 await endSession(freshGuildData.currentSessionId, false);
-                guildData.currentSessionId = null;
-                await saveGuildData(player.guildId, guildData);
+                freshGuildData.currentSessionId = null;
+                await saveGuildData(player.guildId, freshGuildData);
             }
         } catch (err) {
             console.error("[euphire] Failed to end stats session on track stuck:", err.message);
         }
         
-        const assignedChannel = resolveAssignedChannel(client, player, guildData);
+        const assignedChannel = resolveAssignedChannel(client, player, freshGuildData);
         if (assignedChannel) {
             assignedChannel.send(`⚠️ Track stuck: **${track.info.title}**. Skipping...`).catch(() => {});
         }

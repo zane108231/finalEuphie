@@ -1,22 +1,21 @@
-const { SlashCommandBuilder, MessageFlags, ContainerBuilder, TextDisplayBuilder } = require("discord.js");
+const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const { requireMusicAction } = require("../utils/permissions");
-const { getMusicDenial } = require("../utils/permissions");
 
 module.exports = {
-    aliases: ["repeat"],
+    aliases: ["repeat", "loopq"],
     data: new SlashCommandBuilder()
         .setName("loop")
-        .setDescription("Set loop mode")
+        .setDescription("Toggle track or queue loop mode")
         .addStringOption((opt) =>
             opt
                 .setName("mode")
-                .setDescription("Loop mode")
-                .setRequired(true)
+                .setDescription("Loop mode (track, queue, or off)")
+                .setRequired(false)
                 .addChoices(
-                    { name: "Off", value: "none" },
                     { name: "Track", value: "track" },
-                    { name: "Queue", value: "queue" }
+                    { name: "Queue", value: "queue" },
+                    { name: "Off", value: "none" }
                 )
         ),
 
@@ -24,33 +23,67 @@ module.exports = {
         const player = await requireMusicAction(interaction, client, "loop");
         if (!player) return;
 
-        const mode = (interaction.options.getString("mode") || "").toLowerCase();
-        if (!["none", "off", "track", "queue"].includes(mode)) {
-            return interaction.reply({
-                content: "❌ Usage: `!loop none` · `!loop track` · `!loop queue`",
-                flags: MessageFlags.Ephemeral,
-            });
+        const guildId = interaction.guild.id;
+        const guildData = getGuildData(guildId);
+        const currentLoop = player.loop || guildData.loop || "none";
+
+        const rawArgs = interaction.args || [];
+        const rawFirst = (rawArgs[0] || "").toLowerCase().trim();
+        const modeOpt = (interaction.options?.getString("mode") || "").toLowerCase().trim();
+
+        // Check if queue loop was requested (e!loopq, e!loop q, e!loop queue, /loop mode:queue)
+        const isQueueTarget =
+            interaction.commandName === "loopq" ||
+            rawFirst === "q" ||
+            rawFirst === "queue" ||
+            modeOpt === "queue";
+
+        // Check if explicit off / none was requested
+        const isExplicitOff =
+            rawFirst === "off" ||
+            rawFirst === "none" ||
+            rawFirst === "disable" ||
+            modeOpt === "none";
+
+        let newMode = "none";
+        let messageText = "";
+
+        if (isExplicitOff) {
+            newMode = "none";
+            if (currentLoop === "queue") {
+                messageText = "I will no longer repeat the queue";
+            } else {
+                messageText = "I will no longer repeat the current track";
+            }
+        } else if (isQueueTarget) {
+            if (currentLoop === "queue") {
+                newMode = "none";
+                messageText = "I will no longer repeat the queue";
+            } else {
+                newMode = "queue";
+                messageText = "I will now repeat the queue :repeat:";
+            }
+        } else {
+            // Track loop toggle (e!loop, e!loop track, /loop mode:track, or e!repeat)
+            if (currentLoop === "track") {
+                newMode = "none";
+                messageText = "I will no longer repeat the current track";
+            } else {
+                newMode = "track";
+                messageText = "I will now repeat the current track :repeat_one:";
+            }
         }
-        const resolvedMode = mode === "off" ? "none" : mode;
-        const guildData = getGuildData(interaction.guild.id);
-        guildData.loop = resolvedMode;
-        player.setLoop(resolvedMode);
-        await saveGuildData(interaction.guild.id, guildData);
 
-        const labels = { none: "Off", track: "Track", queue: "Queue" };
-        const emojis = { none: "➡️", track: "🔂", queue: "🔁" };
+        // Apply new loop state
+        player.setLoop(newMode);
+        guildData.loop = newMode;
+        await saveGuildData(guildId, guildData);
 
-        const container = new ContainerBuilder();
-        container.addTextDisplayComponents(
-            new TextDisplayBuilder().setContent(
-                `### ${emojis[resolvedMode]} Loop Updated\n\n` +
-                "**Mode**\n" +
-                `-# ${labels[resolvedMode]}`
-            )
-        );
-        await interaction.reply({
-            components: [container],
-            flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
-        });
+        // Green line on left side of rectangle embed message (0x00FF00)
+        const embed = new EmbedBuilder()
+            .setColor(0x00ff00)
+            .setDescription(messageText);
+
+        return interaction.reply({ embeds: [embed] });
     },
 };

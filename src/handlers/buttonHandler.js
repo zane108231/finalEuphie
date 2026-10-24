@@ -14,7 +14,7 @@ const config = require("../../config");
  */
 async function handleButtonInteraction(client, interaction) {
     // Handle help menu interactions
-    if (interaction.customId === 'help_command_select' || interaction.customId === 'help_back') {
+    if (interaction.customId?.startsWith('help_')) {
         const helpCommand = require('../commands/help');
         await helpCommand.handleInteraction(interaction, client);
         return;
@@ -24,6 +24,25 @@ async function handleButtonInteraction(client, interaction) {
     if (interaction.customId === 'lastfm_verify') {
         const loginCommand = require('../commands/login');
         await loginCommand.handleVerify(interaction);
+        return;
+    }
+
+    if (interaction.customId?.startsWith("playlist_track_select:")) {
+        await require("../utils/playlistSelection").handlePlaylistSelection(
+            interaction,
+            client
+        );
+        return;
+    }
+
+    if (
+        interaction.customId?.startsWith("playlist_search_page:") ||
+        interaction.customId?.startsWith("playlist_search_select:")
+    ) {
+        await require("../commands/playlistsearch").handleInteraction(
+            interaction,
+            client
+        );
         return;
     }
 
@@ -39,6 +58,14 @@ async function handleButtonInteraction(client, interaction) {
         const queueCommand = require('../commands/queue');
         await queueCommand.handleInteraction(interaction, client);
         return;
+    }
+
+    // Handle Permission Info button
+    if (interaction.customId?.startsWith('perm_info_')) {
+        const rawPerm = interaction.customId.replace('perm_info_', '').replace(/_/g, ' ');
+        const { getPermissionInfoEmbed } = require('../utils/permissions');
+        const embed = getPermissionInfoEmbed(rawPerm, interaction.guild?.id);
+        return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
     if (!client.riffy) {
@@ -321,8 +348,11 @@ async function handleButtonInteraction(client, interaction) {
     };
     const requiredAction = buttonActionMap[customId];
     if (requiredAction && !(await canUseMusicAction(interaction.member, player, requiredAction))) {
+        const { actionToPermission, buildMissingPermissionResponse } = require("../utils/permissions");
+        const requiredPerm = actionToPermission(requiredAction) || requiredAction;
+        const resp = buildMissingPermissionResponse(requiredPerm, "session");
         return interaction.reply({
-            content: denyMusicMessage(interaction.guild.id, requiredAction),
+            ...resp,
             flags: MessageFlags.Ephemeral,
         });
     }
@@ -350,11 +380,28 @@ async function handleButtonInteraction(client, interaction) {
                         // Add current voice channel members as participants
                         const voiceChannel = client.channels.cache.get(player.voiceChannel);
                         if (voiceChannel) {
-                            voiceChannel.members.forEach((member) => {
-                                if (!member.user.bot && member.id !== userId) {
-                                    addSessionParticipant(sessionId, member.id);
-                                }
-                            });
+                            const participantIds = new Set();
+                            if (voiceChannel.members) {
+                                voiceChannel.members.forEach((member) => {
+                                    if (!member.user?.bot && member.id !== userId) {
+                                        participantIds.add(member.id);
+                                    }
+                                });
+                            }
+                            const guild = client.guilds.cache.get(player.guildId);
+                            if (guild?.voiceStates?.cache) {
+                                guild.voiceStates.cache.forEach((vs, memberId) => {
+                                    if (vs.channelId === player.voiceChannel && memberId !== client.user?.id && memberId !== userId) {
+                                        const m = vs.member || guild.members.cache.get(memberId);
+                                        if (!m?.user?.bot) {
+                                            participantIds.add(memberId);
+                                        }
+                                    }
+                                });
+                            }
+                            for (const pId of participantIds) {
+                                addSessionParticipant(sessionId, pId).catch(() => {});
+                            }
                         }
                     }
                 } catch (err) {
@@ -566,7 +613,7 @@ async function editPlayerMessageDirectly(client, player, guildData) {
         // Use ChatPlay container if in ChatPlay channel for consistent formatting
         const container = guildData.chatPlayChannelId && guildData.chatPlayMessageId
             ? createChatPlayNowPlayingContainer(player.current, player, guildData, musicardBuffer)
-            : createNowPlayingContainer(player.current, player, guildData, musicardBuffer);
+            : createNowPlayingContainer(player.current, player, guildData, musicardBuffer, client);
 
         const files = [];
         if (musicardBuffer) {

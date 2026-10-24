@@ -5,6 +5,7 @@
 The bot now uses MongoDB to store all persistent data:
 - Voice channel sessions and DJ ownership
 - Guild settings and queues
+- Active playback tracks, queues, and positions for restart recovery
 - Player state and preferences
 - Statistics and tracking data
 
@@ -114,12 +115,18 @@ You should see:
 - Check MONGODB_URI is set in .env
 - Verify the connection string is valid
 
-## Without MongoDB
+## MongoDB Is Required
 
-If you don't set `MONGODB_URI`, the bot will use in-memory storage only:
-- Data will be lost on restart
-- Higher RAM usage
-- Not recommended for production
+The bot will not start if it cannot connect to MongoDB. This prevents playback
+sessions from silently falling back to temporary in-memory storage and being lost.
+After a restart, active sessions are restored automatically. If automatic recovery
+does not complete, the session owner can run `e!resume session` in the server.
+
+Set `DEVELOPER_DISCORD_ID` in your `.env` to the bot developer's Discord user ID.
+Only that user can run the hidden `e!update` command. It posts a maintenance notice,
+saves active playback sessions to MongoDB, then requests a restart after two
+minutes. The host must restart the process after it exits; Docker Compose already
+uses `restart: unless-stopped`.
 
 ## Backup Your Data
 

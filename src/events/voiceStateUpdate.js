@@ -8,26 +8,92 @@ module.exports = {
     name: "voiceStateUpdate",
     async execute(client, oldState, newState) {
         // Track shared listening: user joins/leaves voice channel while music is playing
-        if (oldState.id !== client.user.id && !oldState.member?.user?.bot) {
-            const player = client.riffy.players.get(oldState.guild.id);
+        const member = newState.member || oldState.member;
+        if (oldState.id !== client.user.id && !member?.user?.bot) {
+            let player = client.riffy?.players?.get(oldState.guild.id);
+            if (!player) {
+                for (const c of coordinator.getAllClients()) {
+                    const p = c.riffy?.players?.get(oldState.guild.id);
+                    if (p) {
+                        player = p;
+                        break;
+                    }
+                }
+            }
+
             if (player && player.playing && !player.paused) {
                 const sessionId = player.currentSessionId;
-                if (sessionId) {
-                    // User joined the voice channel
-                    if (!oldState.channelId && newState.channelId && newState.channelId === player.voiceChannel) {
-                        addSessionParticipant(sessionId, oldState.id);
-                    }
-                    // User left the voice channel
-                    else if (oldState.channelId && !newState.channelId && oldState.channelId === player.voiceChannel) {
-                        removeSessionParticipant(sessionId, oldState.id);
-                    }
-                    // User moved to a different channel
-                    else if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
-                        if (oldState.channelId === player.voiceChannel) {
-                            removeSessionParticipant(sessionId, oldState.id);
-                        } else if (newState.channelId === player.voiceChannel) {
-                            addSessionParticipant(sessionId, oldState.id);
+                if (player.voiceChannel) {
+                    const joinedVC = newState.channelId === player.voiceChannel && oldState.channelId !== player.voiceChannel;
+                    const leftVC = oldState.channelId === player.voiceChannel && newState.channelId !== player.voiceChannel;
+
+                    if (joinedVC) {
+                        if (sessionId) {
+                            addSessionParticipant(sessionId, newState.id).catch(() => {});
                         }
+                        // Update Last.fm now playing immediately for user who joined
+                        const { getUserData } = require("../utils/mongoUserData");
+                        const { updateNowPlaying } = require("../utils/lastfm");
+                        getUserData(newState.id).then(async (userData) => {
+                            if (userData?.lastfmSessionKey && player.current?.info) {
+                                const trackInfo = player.current.info;
+                                let artist = trackInfo.author || "Unknown";
+                                let trackName = trackInfo.title || "Unknown";
+                                if ((artist === "Unknown" || artist.includes("- Topic")) && trackName.includes(" - ")) {
+                                    const parts = trackName.split(" - ");
+                                    if (parts.length >= 2) {
+                                        artist = parts[0].trim();
+                                        trackName = parts.slice(1).join(" - ").trim();
+                                    }
+                                }
+                                await updateNowPlaying(
+                                    userData.lastfmSessionKey,
+                                    artist,
+                                    trackName,
+                                    trackInfo.album || null,
+                                    trackInfo.length || 0
+                                );
+                            }
+                        }).catch(() => {});
+                    } else if (leftVC && sessionId) {
+                        removeSessionParticipant(sessionId, oldState.id).catch(() => {});
+                    }
+                }
+            }
+        }
+
+        // Check if all non-bot humans left a voice channel containing a bot
+        if (oldState.channelId && oldState.channelId !== newState.channelId) {
+            const leftChannel = oldState.guild.channels.cache.get(oldState.channelId);
+            if (leftChannel) {
+                const sessionOwner = coordinator.resolveSessionOwner(oldState.channelId, oldState.guild);
+                if (sessionOwner) {
+                    const humans = leftChannel.members.filter((m) => !m.user?.bot);
+                    if (humans.size === 0) {
+                        const targetClient = coordinator.getClient(sessionOwner) || client;
+                        const player = targetClient.riffy?.players?.get(oldState.guild.id);
+                        if (player) {
+                            const guildData = getGuildData(oldState.guild.id);
+                            const { setPlayerIdleTimeout } = require("../utils/playback");
+                            setPlayerIdleTimeout(targetClient, player, guildData, "empty");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check if a human rejoined a voice channel with a bot (cancel empty timeout)
+        if (newState.channelId && newState.channelId !== oldState.channelId && !member?.user?.bot) {
+            const joinedChannel = newState.guild.channels.cache.get(newState.channelId);
+            if (joinedChannel) {
+                const sessionOwner = coordinator.resolveSessionOwner(newState.channelId, newState.guild);
+                if (sessionOwner) {
+                    const targetClient = coordinator.getClient(sessionOwner) || client;
+                    const player = targetClient.riffy?.players?.get(newState.guild.id);
+                    if (player && (player.playing || (player.queue && player.queue.length > 0))) {
+                        const guildData = getGuildData(newState.guild.id);
+                        const { clearPlayerIdleTimeout } = require("../utils/playback");
+                        clearPlayerIdleTimeout(player, guildData);
                     }
                 }
             }

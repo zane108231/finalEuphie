@@ -13,6 +13,9 @@ module.exports = {
         // Initialize riffy with bot user ID
         client.riffy.init(client.user.id);
 
+        // Fetch and cache application emojis
+        client.application?.emojis?.fetch().catch(() => {});
+
         startStatusMonitor(client);
 
         // Cycling statuses

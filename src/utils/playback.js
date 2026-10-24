@@ -54,46 +54,36 @@ async function waitForNode(riffy, timeoutMs = 10000) {
 }
 
 function getOccupiedVoiceChannel(guild, client) {
-    const coordinator = require("./mongoCoordinator");
-    
-    // 1. Check coordinator recorded channel
-    const botId = client?.botId;
-    if (botId) {
-        const vcId = coordinator.getBotVoiceChannel(botId);
-        if (vcId) {
-            const channel = guild?.channels?.cache?.get(vcId) || client.channels?.cache?.get(vcId);
-            if (channel) return channel;
-            return { id: vcId, name: "another voice channel" };
-        }
-    }
+    if (!guild || !client) return null;
 
-    // 2. Check guild voiceStates cache (always kept fresh by Discord Gateway)
-    if (guild && client.user) {
+    // 1. Check guild voiceStates cache (always kept fresh by Discord Gateway)
+    if (client.user) {
         const vs = guild.voiceStates?.cache?.get(client.user.id);
         if (vs?.channelId) {
-            return guild.channels?.cache?.get(vs.channelId) || { id: vs.channelId, name: "another voice channel" };
+            return guild.channels?.cache?.get(vs.channelId) || { id: vs.channelId, name: "another voice channel", guild };
+        }
+        const me = guild.members?.cache?.get(client.user.id) || guild.members?.me;
+        if (me?.voice?.channelId) {
+            return me.voice?.channel || guild.channels?.cache?.get(me.voice.channelId) || { id: me.voice.channelId, name: "another voice channel", guild };
         }
     }
 
-    // 3. Check across all client guilds for voice connection
-    if (client.guilds?.cache) {
-        for (const [, g] of client.guilds.cache) {
-            const vs = g.voiceStates?.cache?.get(client.user?.id);
-            if (vs?.channelId) {
-                return g.channels?.cache?.get(vs.channelId) || { id: vs.channelId, name: "another voice channel" };
-            }
-            const me = g.members?.cache?.get(client.user?.id) || g.members?.me;
-            if (me?.voice?.channelId) {
-                return me.voice.channel || g.channels?.cache?.get(me.voice.channelId) || { id: me.voice.channelId, name: "another voice channel" };
-            }
-        }
+    // 2. Check riffy player for this guild
+    const player = client.riffy?.players?.get(guild.id);
+    if (player?.voiceChannel) {
+        return guild.channels?.cache?.get(player.voiceChannel) || { id: player.voiceChannel, name: "another voice channel", guild };
     }
 
-    // 4. Check riffy player
-    if (guild) {
-        const player = client.riffy?.players?.get(guild.id);
-        if (player?.voiceChannel) {
-            return guild.channels?.cache?.get(player.voiceChannel) || { id: player.voiceChannel, name: "another voice channel" };
+    // 3. Check coordinator recorded channel if it exists in THIS guild
+    const coordinator = require("./mongoCoordinator");
+    const botId = client?.botId;
+    if (botId && guild?.id) {
+        const vcId = coordinator.getBotVoiceChannelInGuild
+            ? coordinator.getBotVoiceChannelInGuild(botId, guild.id)
+            : coordinator.getBotVoiceChannel(botId, guild.id);
+        if (vcId) {
+            const channel = guild.channels?.cache?.get(vcId);
+            if (channel) return channel;
         }
     }
 
@@ -150,8 +140,9 @@ async function replyAlreadyInUse(interaction, channel) {
 
 async function ensurePlayer(client, { guildId, voiceChannelId, textChannelId, volume = 75, requesterId = null }) {
     const coordinator = require("./mongoCoordinator");
+    const { installPlayerPersistence } = require("./playbackRecovery");
 
-    // Anti-theft guard: if this bot is currently in a DIFFERENT voice channel, refuse to steal/move it
+    // Anti-theft guard: if this bot is currently in a DIFFERENT voice channel in THIS guild, refuse to steal/move it
     const currentOccupied = getOccupiedVoiceChannel(client.guilds?.cache?.get(guildId), client);
     if (currentOccupied && currentOccupied.id !== voiceChannelId) {
         throw new Error(`Bot ${client.botId} is already occupied in voice channel ${currentOccupied.id}`);
@@ -187,6 +178,7 @@ async function ensurePlayer(client, { guildId, voiceChannelId, textChannelId, vo
                 mute: false,
             });
         }
+        installPlayerPersistence(client, player);
         return player;
     }
 
@@ -209,6 +201,7 @@ async function ensurePlayer(client, { guildId, voiceChannelId, textChannelId, vo
         player.requesterId = requesterId;
         if (voiceChannelId) coordinator.setSessionDJ(voiceChannelId, requesterId);
     }
+    installPlayerPersistence(client, player);
     return player;
 }
 
@@ -227,6 +220,7 @@ function setAnnounceChannel(player, guildData, channelId) {
 
 async function startIfIdle(player) {
     if (!player) return player;
+    clearPlayerIdleTimeout(player);
     if (player.playing || player.paused) return player;
     if (!player.queue.length) return player;
 
@@ -258,6 +252,106 @@ function setVolumeSafe(player, volume) {
     );
 }
 
+function clearPlayerIdleTimeout(player, guildData) {
+    if (player?.idleTimeout) {
+        clearTimeout(player.idleTimeout);
+        player.idleTimeout = null;
+    }
+    if (guildData?.idleTimeout) {
+        clearTimeout(guildData.idleTimeout);
+        guildData.idleTimeout = null;
+    }
+}
+
+function setPlayerIdleTimeout(client, player, guildData, reason = "idle") {
+    if (!player || !client) return;
+    if (guildData?.twentyFourSeven) return;
+
+    clearPlayerIdleTimeout(player, guildData);
+
+    console.log(`[euphire] Setting 3-minute idle timeout (${reason}) for bot ${client.botId} in VC ${player.voiceChannel}`);
+
+    player.idleTimeout = setTimeout(async () => {
+        // If track is playing or queue is not empty, do not leave (unless empty VC reason)
+        if (reason !== "empty" && (player.playing || (player.queue && player.queue.length > 0))) {
+            player.idleTimeout = null;
+            return;
+        }
+
+        const coordinator = require("./mongoCoordinator");
+        const { endSession } = require("./mongoStats");
+        const { saveGuildData } = require("./mongoGuildData");
+        const { EmbedBuilder } = require("discord.js");
+
+        console.log(`[euphire] Idle timeout reached (${reason}), bot ${client.botId} leaving voice channel ${player.voiceChannel}`);
+
+        // Check if bot is still in the voice channel
+        const botMember = client.guilds.cache.get(player.guildId)?.members?.cache?.get(client.user.id);
+        const currentVoiceChannel = botMember?.voice?.channel;
+
+        if (!currentVoiceChannel || currentVoiceChannel.id !== player.voiceChannel) {
+            player.idleTimeout = null;
+            return;
+        }
+
+        // If reason is empty, verify channel is still empty of non-bot humans
+        if (reason === "empty") {
+            const humans = currentVoiceChannel.members.filter((m) => !m.user?.bot);
+            if (humans.size > 0) {
+                console.log(`[euphire] Humans returned to VC ${player.voiceChannel}, cancelling empty-leave`);
+                player.idleTimeout = null;
+                return;
+            }
+        }
+
+        // Send leaving message to text channel
+        const channelId = player.assignedTextChannel || player.textChannel || guildData.playerChannelId;
+        const targetLeaveChannel = channelId ? client.channels.cache.get(channelId) : null;
+        if (targetLeaveChannel) {
+            try {
+                const leaveMsg =
+                    reason === "empty"
+                        ? "No members left in voice channel, leaving :wave:"
+                        : "No tracks have been playing for the past 3 minutes, leaving :wave:";
+                const leaveEmbed = new EmbedBuilder().setColor(0xED4245).setDescription(leaveMsg);
+                await targetLeaveChannel.send({ embeds: [leaveEmbed] });
+            } catch (err) {
+                console.error("[euphire] Failed to send leave message:", err.message);
+            }
+        }
+
+        // End active session if any
+        if (player.currentSessionId) {
+            const listenedMs = player.position || (player.sessionStartedAt ? Date.now() - player.sessionStartedAt : 0);
+            await endSession(player.currentSessionId, false, listenedMs).catch(() => {});
+            player.currentSessionId = null;
+        }
+
+        // Release bot from coordinator
+        if (player.voiceChannel) {
+            await coordinator.releaseBot(player.voiceChannel);
+        }
+        if (coordinator.botSessions.has(client.botId)) {
+            for (const vcId of [...coordinator.botSessions.get(client.botId)]) {
+                await coordinator.releaseBot(vcId);
+            }
+        }
+        coordinator.markBotAvailable(client.botId);
+        guildData.djOwnerId = null;
+
+        if (targetLeaveChannel && guildData.playerChannelId === targetLeaveChannel.id) {
+            guildData.playerMessageId = null;
+            guildData.playerChannelId = null;
+        }
+        await saveGuildData(player.guildId, guildData);
+
+        try {
+            player.destroy();
+        } catch {}
+        player.idleTimeout = null;
+    }, 3 * 60 * 1000); // 3 minutes
+}
+
 module.exports = {
     isActivelyPlaying,
     isDuplicateTrack,
@@ -266,6 +360,8 @@ module.exports = {
     ensurePlayer,
     setAnnounceChannel,
     setVolumeSafe,
+    setPlayerIdleTimeout,
+    clearPlayerIdleTimeout,
     waitForNode,
     getOccupiedVoiceChannel,
     replyAlreadyInUse,

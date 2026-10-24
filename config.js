@@ -9,7 +9,7 @@ module.exports = {
         name: "Main",
     },
 
-    prefix: "e!",
+    prefix: "ee!",
 
     defaultSearchPlatform: "spsearch",
     restVersion: "v4",

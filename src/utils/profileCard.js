@@ -432,20 +432,49 @@ async function drawBackground(ctx, backgroundOption = 'default', customColor = n
         return;
     }
 
-    // 2. Check local custom background file (never expires)
-    const localBgPath = userId ? path.join(__dirname, '..', '..', 'data', 'backgrounds', `${userId}.png`) : null;
-    if (localBgPath && fs.existsSync(localBgPath) && backgroundOption !== 'default' && backgroundOption !== 'avatar') {
+    // 2. Check MongoDB first for custom background (ensures consistency across all bots)
+    if (userId && backgroundOption !== 'default' && backgroundOption !== 'avatar') {
+        let buf = null;
+        
+        // First, try to fetch from MongoDB (source of truth)
         try {
-            const buf = fs.readFileSync(localBgPath);
-            const bgImg = await loadImage(buf);
-            ctx.save();
-            drawCoverImage(ctx, bgImg, WIDTH, HEIGHT);
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-            ctx.fillRect(0, 0, WIDTH, HEIGHT);
-            ctx.restore();
-            return;
+            const { getUserBackground } = require('./mongoUserData');
+            buf = await getUserBackground(userId);
+            if (buf) {
+                // Cache to local disk for fast subsequent renders
+                const localBgPath = path.join(__dirname, '..', '..', 'data', 'backgrounds', `${userId}.png`);
+                try {
+                    const bgDir = path.dirname(localBgPath);
+                    if (!fs.existsSync(bgDir)) fs.mkdirSync(bgDir, { recursive: true });
+                    fs.writeFileSync(localBgPath, buf);
+                } catch (_) {}
+            }
         } catch (err) {
-            console.error('[euphire] Failed to load local custom background:', err.message);
+            console.error('[euphire] Failed to fetch custom background from MongoDB:', err.message);
+        }
+
+        // Fallback to local disk cache if MongoDB fetch failed
+        if (!buf) {
+            const localBgPath = path.join(__dirname, '..', '..', 'data', 'backgrounds', `${userId}.png`);
+            if (fs.existsSync(localBgPath)) {
+                try {
+                    buf = fs.readFileSync(localBgPath);
+                } catch (_) {}
+            }
+        }
+
+        if (buf) {
+            try {
+                const bgImg = await loadImage(buf);
+                ctx.save();
+                drawCoverImage(ctx, bgImg, WIDTH, HEIGHT);
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+                ctx.fillRect(0, 0, WIDTH, HEIGHT);
+                ctx.restore();
+                return;
+            } catch (err) {
+                console.error('[euphire] Failed to load custom background image:', err.message);
+            }
         }
     }
 
@@ -664,18 +693,35 @@ async function generateProfileCard(
     await drawBackground(ctx, bgOption, bgColor, botAvatar, user.id);
     drawBrand(ctx);
 
-    // Avatar
+    // Avatar customization
     const av = { x: 116, y: 121, r: 78 };
+    const shape = userSettings?.avatarShape === 'square' ? 'square' : 'circle';
+    const border = userSettings?.avatarBorder; // 'none' | '#hex' | null / 'default'
+    const avBg = (userSettings?.avatarBackground && userSettings.avatarBackground.startsWith('#')) ? userSettings.avatarBackground : C.avatarFallback;
 
-    ctx.fillStyle = C.avatarRing;
-    ctx.beginPath();
-    ctx.arc(av.x, av.y, av.r + 6, 0, Math.PI * 2);
-    ctx.fill();
+    // Draw border ring if not 'none'
+    if (border !== 'none') {
+        ctx.fillStyle = (border && border !== 'default' && border.startsWith('#')) ? border : C.avatarRing;
+        if (shape === 'square') {
+            roundRect(ctx, av.x - av.r - 6, av.y - av.r - 6, (av.r + 6) * 2, (av.r + 6) * 2, 22);
+            ctx.fill();
+        } else {
+            ctx.beginPath();
+            ctx.arc(av.x, av.y, av.r + 6, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
 
-    ctx.fillStyle = C.avatarFallback;
-    ctx.beginPath();
-    ctx.arc(av.x, av.y, av.r, 0, Math.PI * 2);
-    ctx.fill();
+    // Avatar background
+    ctx.fillStyle = avBg;
+    if (shape === 'square') {
+        roundRect(ctx, av.x - av.r, av.y - av.r, av.r * 2, av.r * 2, 18);
+        ctx.fill();
+    } else {
+        ctx.beginPath();
+        ctx.arc(av.x, av.y, av.r, 0, Math.PI * 2);
+        ctx.fill();
+    }
 
     try {
         const url = user.displayAvatarURL({
@@ -686,10 +732,14 @@ async function generateProfileCard(
         const img = await loadImageFromURL(url);
 
         ctx.save();
-
-        ctx.beginPath();
-        ctx.arc(av.x, av.y, av.r, 0, Math.PI * 2);
-        ctx.clip();
+        if (shape === 'square') {
+            roundRect(ctx, av.x - av.r, av.y - av.r, av.r * 2, av.r * 2, 18);
+            ctx.clip();
+        } else {
+            ctx.beginPath();
+            ctx.arc(av.x, av.y, av.r, 0, Math.PI * 2);
+            ctx.clip();
+        }
 
         ctx.drawImage(
             img,
@@ -721,8 +771,9 @@ async function generateProfileCard(
     drawCard(ctx, CARD.friends);
     drawCard(ctx, CARD.tracks);
 
-    // Top servers
-    const servers = Array.isArray(topServers) ? topServers : [];
+    // Check privacy settings
+    const privacy = userSettings?.profilePrivacy || { servers: true, friends: true, tracks: true };
+    const servers = (privacy.servers !== false && Array.isArray(topServers)) ? topServers : [];
 
     drawRows(
         ctx,
@@ -752,7 +803,7 @@ async function generateProfileCard(
     );
 
     // Top friends
-    const friends = Array.isArray(topFriends) ? topFriends : [];
+    const friends = (privacy.friends !== false && Array.isArray(topFriends)) ? topFriends : [];
 
     const fetchedFriends = await Promise.all(
         friends.slice(0, 3).map(async friend => {
@@ -786,7 +837,7 @@ async function generateProfileCard(
     );
 
     // Top tracks
-    const tracks = Array.isArray(topTracks) ? topTracks : [];
+    const tracks = (privacy.tracks !== false && Array.isArray(topTracks)) ? topTracks : [];
 
     drawRows(
         ctx,

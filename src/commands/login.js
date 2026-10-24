@@ -13,6 +13,7 @@ module.exports = {
 
     async execute(interaction, client) {
         const userId = interaction.user.id;
+        const isPrefix = Boolean(interaction.message);
 
         // Check if already logged in
         const userData = await getUserData(userId);
@@ -27,6 +28,26 @@ module.exports = {
                     "-# Use e!logout to disconnect your Last.fm account."
                 )
             );
+
+            if (isPrefix && interaction.guild) {
+                try {
+                    await interaction.user.send({
+                        components: [container],
+                        flags: MessageFlags.IsComponentsV2,
+                    });
+                    const msg = await interaction.channel.send({
+                        content: `ℹ️ <@${userId}>, you are already logged in as **${userData.lastfmUsername}**! I sent your details via DM.`,
+                    });
+                    setTimeout(() => msg.delete().catch(() => {}), 10000);
+                    return;
+                } catch {
+                    return interaction.reply({
+                        components: [container],
+                        flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+                    });
+                }
+            }
+
             return interaction.reply({
                 components: [container],
                 flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
@@ -79,6 +100,31 @@ module.exports = {
 
         container.addActionRowComponents(buttonRow);
 
+        // If prefix command in a server channel, deliver via private DM!
+        if (isPrefix && interaction.guild) {
+            try {
+                if (interaction.message?.deletable) {
+                    await interaction.message.delete().catch(() => {});
+                }
+
+                await interaction.user.send({
+                    components: [container],
+                    flags: MessageFlags.IsComponentsV2,
+                });
+
+                const notice = await interaction.channel.send({
+                    content: `🔒 <@${userId}>, I have sent your private Last.fm authorization link to your **Direct Messages** so no one else can see or steal it!`,
+                });
+                setTimeout(() => notice.delete().catch(() => {}), 15000);
+                return;
+            } catch (dmErr) {
+                return interaction.reply({
+                    content: `⚠️ <@${userId}>, I couldn't send you a Direct Message! Please enable Direct Messages from server members so only you can see your login link, or use the slash command \`/login\` (which is natively private/ephemeral).`,
+                });
+            }
+        }
+
+        // Slash command ephemeral reply
         await interaction.reply({
             components: [container],
             flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
@@ -87,7 +133,6 @@ module.exports = {
         // Clean up expired tokens after 30 minutes
         setTimeout(() => {
             pendingAuth.delete(userId);
-            // Also clear from userData
             userData.lastfmToken = null;
             userData.lastfmTokenTimestamp = null;
             saveUserData(userId, userData);

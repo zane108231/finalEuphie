@@ -76,12 +76,84 @@ function buildAddedTrackEmbed(client, user, { trackValue, eta, length, upcomingP
 
 // Send publicly in the channel (the deferred reply is ephemeral), fall back to the reply if that fails
 async function sendPublicEmbed(interaction, embed) {
+    if (interaction.replacePlaylistSearchMessage && interaction.message?.edit) {
+        try {
+            await interaction.message.edit({
+                embeds: [embed],
+                components: [],
+            });
+            interaction.playlistSearchMessageUpdated = true;
+            await interaction.deleteReply().catch(() => {});
+            return;
+        } catch (error) {
+            console.error(
+                "[euphire] Could not replace playlist search results with the added playlist card:",
+                error.message
+            );
+        }
+    }
+
     try {
         await interaction.channel.send({ embeds: [embed] });
         await interaction.deleteReply().catch(() => {});
     } catch (err) {
         await interaction.editReply({ embeds: [embed] });
     }
+}
+
+function formatPlaylistDuration(ms) {
+    const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function buildAddedPlaylistEmbed(
+    client,
+    playlist,
+    playlistInfo,
+    tracks,
+    addedTrackCount,
+    length
+) {
+    const name =
+        playlistInfo?.name || playlist?.name || "Unknown Playlist";
+    const url = playlist?.url || playlistInfo?.url || "https://open.spotify.com";
+    const artwork =
+        playlist?.artworkUrl ||
+        playlistInfo?.artworkUrl ||
+        getArtwork(tracks[0]);
+    const escapedName = name.replace(/[\[\]]/g, "\\$&");
+    const embed = new EmbedBuilder()
+        .setColor(0x2b2d31)
+        .setAuthor({
+            name: "Added Playlist",
+            iconURL: client.user?.displayAvatarURL?.(),
+        })
+        .addFields(
+            {
+                name: "Playlist",
+                value: `[${escapedName}](${url})`,
+                inline: false,
+            },
+            {
+                name: "Playlist Length",
+                value: formatPlaylistDuration(length),
+                inline: true,
+            },
+            {
+                name: "Tracks",
+                value: String(
+                    playlist?.trackCount || addedTrackCount || tracks.length
+                ),
+                inline: true,
+            }
+        );
+    if (artwork && /^https?:\/\//i.test(artwork)) {
+        embed.setThumbnail(artwork);
+    }
+    return embed;
 }
 
 module.exports = {
@@ -94,7 +166,8 @@ module.exports = {
         ),
 
     async execute(interaction, client) {
-        const query = interaction.options.getString("query");
+        const query =
+            interaction.queryOverride || interaction.options.getString("query");
         if (!query) {
             return interaction.reply({
                 content: "❌ Usage: `!play <song name or URL>`",
@@ -135,8 +208,8 @@ module.exports = {
             // No session exists - reserve THIS bot if available
             console.log(`[euphire] No session exists for voice channel ${voiceChannelId}, checking if bot ${client.botId} is available...`);
 
-            // First check if this bot is available
-            if (coordinator.isBotAvailable(client.botId)) {
+            // First check if this bot is available in this guild
+            if (coordinator.isBotAvailable(client.botId, interaction.guild.id)) {
                 // This bot is available - reserve it directly
                 const reserved = await coordinator.reserveSpecificBot(voiceChannelId, userId, client.botId, interaction.guild.id);
                 if (reserved) {
@@ -182,7 +255,9 @@ module.exports = {
             }
         }
 
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        }
 
         const guildData = getGuildData(interaction.guild.id);
 
@@ -224,11 +299,13 @@ module.exports = {
             // Handle all Lavalink v3 + v4 loadType variants
             if (
                 loadType === "playlist" ||
+                loadType === "playlist_loaded" ||
                 loadType === "PLAYLIST_LOADED"
             ) {
                 const duplicates = [];
                 const addedTracks = [];
                 let addedLength = 0;
+                let playlistLength = 0;
 
                 // Where the first added song will sit in the queue
                 const startIndex = player.queue.length;
@@ -237,6 +314,7 @@ module.exports = {
 
                 for (const track of tracksToProcess) {
                     track.info.requester = interaction.user;
+                    playlistLength += track.info.length || 0;
 
                     if (isDuplicateTrack(player, track)) {
                         duplicates.push(track.info.title || "Unknown");
@@ -246,26 +324,47 @@ module.exports = {
                         addedLength += track.info.length || 0;
                     }
                 }
+                interaction.playbackQueryQueued = addedTracks.length > 0;
+                if (interaction.playbackQueryQueued && interaction.onPlaybackQueued) {
+                    await interaction.onPlaybackQueued(interaction, client);
+                }
+                if (
+                    interaction.playlistSearchSelection &&
+                    addedTracks.length === 0
+                ) {
+                    return interaction.editReply({
+                        content:
+                            "All tracks from that playlist are already playing or queued.",
+                    });
+                }
+                await startIfIdle(player);
 
                 const eta = wasIdle ? 0 : etaUntilIndex(player, startIndex);
                 const upcomingPos = startIndex === 0 ? "Next" : String(startIndex + 1);
                 const queuePos = String(startIndex + 1 + (wasIdle ? 0 : 1));
 
-                const embed = buildAddedTrackEmbed(client, interaction.user, {
-                    trackValue: `${playlistInfo?.name || "Unknown Playlist"} (${addedTracks.length} songs)`,
-                    eta: fmt(eta),
-                    length: fmt(addedLength),
-                    upcomingPos,
-                    queuePos,
-                    thumbnail: playlistInfo?.artworkUrl || getArtwork(tracks[0]),
-                    extraField: duplicates.length > 0
-                        ? { name: "Duplicates Skipped", value: `${duplicates.length} songs already in queue`, inline: false }
-                        : null,
-                });
+                const embed = interaction.playlistSearchSelection
+                    ? buildAddedPlaylistEmbed(
+                          client,
+                          interaction.playlistSearchSelection,
+                          playlistInfo,
+                          tracks,
+                          addedTracks.length,
+                          playlistLength
+                      )
+                    : buildAddedTrackEmbed(client, interaction.user, {
+                          trackValue: `${playlistInfo?.name || "Unknown Playlist"} (${addedTracks.length} songs)`,
+                          eta: fmt(eta),
+                          length: fmt(addedLength),
+                          upcomingPos,
+                          queuePos,
+                          thumbnail: playlistInfo?.artworkUrl || getArtwork(tracks[0]),
+                          extraField: duplicates.length > 0
+                              ? { name: "Duplicates Skipped", value: `${duplicates.length} songs already in queue`, inline: false }
+                              : null,
+                      });
 
                 await sendPublicEmbed(interaction, embed);
-
-                await startIfIdle(player);
             } else if (
                 loadType === "search" ||
                 loadType === "track" ||
@@ -297,6 +396,10 @@ module.exports = {
                 track.info.requester = interaction.user;
                 const shouldStart = !player.playing && !player.paused;
                 player.queue.add(track);
+                interaction.playbackQueryQueued = true;
+                if (interaction.onPlaybackQueued) {
+                    await interaction.onPlaybackQueued(interaction, client);
+                }
 
                 await startIfIdle(player);
 

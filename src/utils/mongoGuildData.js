@@ -26,8 +26,21 @@ function createDefaultGuildData() {
         djOwnerId: null,
         musicAllowEveryone: new Set(),
         musicAllows: {},
+        sessionPermissions: {
+            allows: {},
+            denies: {},
+            allowEveryone: [],
+            denyEveryone: []
+        },
+        serverPermissions: {
+            allows: {},
+            denies: {},
+            allowEveryone: [],
+            denyEveryone: []
+        },
         queueEndTime: null,
         currentSessionId: null,
+        leaveAfterQueueEnd: false,
         chatPlayChannelId: null,
         chatPlayMessageId: null,
         prefix: 'e!',
@@ -39,6 +52,12 @@ function createDefaultGuildData() {
 
 function normalizePermissions(data) {
     if (!data) return;
+    if (!data.sessionPermissions || typeof data.sessionPermissions !== 'object') {
+        data.sessionPermissions = { allows: {}, denies: {}, allowEveryone: [], denyEveryone: [] };
+    }
+    if (!data.serverPermissions || typeof data.serverPermissions !== 'object') {
+        data.serverPermissions = { allows: {}, denies: {}, allowEveryone: [], denyEveryone: [] };
+    }
     if (data.musicAllowEveryone) {
         if (Array.isArray(data.musicAllowEveryone)) {
             data.musicAllowEveryone = new Set(data.musicAllowEveryone);

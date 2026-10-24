@@ -22,7 +22,6 @@ async function connectToMongoDB() {
         return client;
     } catch (err) {
         console.error("[euphire] MongoDB connection error:", err.message);
-        console.warn("[euphire] Falling back to in-memory storage only");
         throw err;
     }
 }
@@ -65,6 +64,14 @@ async function createIndexes() {
         await db.collection('activeSessions').createIndex({ sessionId: 1 }, { unique: true });
         await db.collection('activeSessions').createIndex({ guildId: 1 });
         await db.collection('activeSessions').createIndex({ userId: 1 });
+
+        // Music playback recovery and maintenance state
+        await db.collection('playbackSessions').createIndex({ guildId: 1 }, { unique: true });
+        await db.collection('playbackSessions').createIndex({ botId: 1 });
+        await db.collection('recentTracks').createIndex({ userId: 1 }, { unique: true });
+        await db.collection('playlistSelections').createIndex({ token: 1 }, { unique: true });
+        await db.collection('playlistSelections').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+        await db.collection('systemState').createIndex({ key: 1 }, { unique: true });
         
         // Session participants collection indexes
         await db.collection('sessionParticipants').createIndex({ sessionId: 1, userId: 1 }, { unique: true });

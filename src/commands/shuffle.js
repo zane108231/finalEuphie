@@ -12,12 +12,6 @@ module.exports = {
         const player = await requireMusicAction(interaction, client, "shuffle");
         if (!player) return;
 
-        // Correctly await permission denial
-        const denial = await getMusicDenial(interaction.member, player, "shuffle");
-        if (denial) {
-            return interaction.reply({ content: denial, flags: MessageFlags.Ephemeral });
-        }
-
         const guildId = interaction.guild?.id;
         const guildData = await getGuildData(guildId);
 

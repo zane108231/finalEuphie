@@ -7,8 +7,17 @@ const coordinator = require("../utils/mongoCoordinator");
  */
 const MUSIC_COMMANDS = new Set([
     "play", "skip", "pause", "resume", "stop", "leave", "dc", "join", "summon", "queue", "nowplaying",
-    "loop", "shuffle", "volume", "seek", "autoplay",
-    "clear", "move", "remove", "insert", "lyrics"
+    "radio", "search", "playqueue", "playrecent", "playlistselect", "playingsingle", "albumsearch", "playlistsearch",
+    "loop", "loopq", "repeat", "shuffle", "volume", "seek", "autoplay",
+    "clear", "move", "remove", "insert", "lyrics",
+    "forward", "backward", "end-time", "start-time", "skip-to",
+    "previous", "vote-skip", "restart-queue", "select-random", "shuffle-repeat", "remove-after-played",
+    "sort", "swap", "reverse", "reorder", "mass-move", "mass-remove",
+    "remove-last", "remove-user", "remove-range", "remove-absent",
+    "remove-current", "remove-keyword", "remove-duplicates", "song-info",
+    "top-songs", "album-info", "artist-info", "searchlyrics", "save",
+    "next-up", "upcoming", "requested", "recently-played", "queue-info",
+    "session-statistics", "session-information"
 ]);
 
 /**

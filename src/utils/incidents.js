@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const config = require("../../config");
+const { getDB, isDBConnected } = require("./database");
 
 const INCIDENTS_PATH = path.join(__dirname, "..", "..", "data", "incidents.json");
 const MAX_INCIDENTS = 50;
@@ -14,9 +15,13 @@ const UNIMPORTANT_PATTERNS = [
 
 let incidents = [];
 let loaded = false;
+let mongoSynced = false;
 
 function ensureLoaded() {
-    if (loaded) return;
+    if (loaded) {
+        if (!mongoSynced && isDBConnected()) syncFromMongo();
+        return;
+    }
 
     const dir = path.dirname(INCIDENTS_PATH);
     if (!fs.existsSync(dir)) {
@@ -33,11 +38,49 @@ function ensureLoaded() {
     }
 
     loaded = true;
+    if (isDBConnected()) syncFromMongo();
+}
+
+async function syncFromMongo() {
+    if (!isDBConnected() || mongoSynced) return;
+    try {
+        const db = getDB();
+        const docs = await db.collection("incidents")
+            .find({})
+            .sort({ timestamp: -1 })
+            .limit(MAX_INCIDENTS)
+            .toArray();
+        if (docs.length > 0) {
+            incidents = docs.map(d => ({
+                timestamp: d.timestamp,
+                component: d.component,
+                description: d.description
+            }));
+            try {
+                fs.writeFileSync(INCIDENTS_PATH, JSON.stringify(incidents, null, 2), "utf-8");
+            } catch (_) {}
+        }
+        mongoSynced = true;
+    } catch (err) {
+        console.warn("[euphire] Failed to sync incidents from MongoDB:", err.message);
+    }
 }
 
 function saveIncidents() {
     ensureLoaded();
-    fs.writeFileSync(INCIDENTS_PATH, JSON.stringify(incidents, null, 2), "utf-8");
+    try {
+        fs.writeFileSync(INCIDENTS_PATH, JSON.stringify(incidents, null, 2), "utf-8");
+    } catch (_) {}
+
+    if (isDBConnected()) {
+        try {
+            const db = getDB();
+            if (incidents.length > 0) {
+                const latest = incidents[0];
+                db.collection("incidents").insertOne(latest).catch(() => {});
+            }
+        } catch (_) {}
+    }
 }
 
 function isImportantIncident(description) {

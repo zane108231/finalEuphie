@@ -34,18 +34,72 @@ function safeArtworkUrl(track) {
     return url;
 }
 
+const SPOTIFY_EMOJIS = {
+    euphie_main: "1561285569068273674",
+    euphie_1: "1561287030703661126",
+    euphie_2: "1561287096084336690",
+    euphie_3: "1561287176879087696",
+};
+
+const BOT_USER_IDS = {
+    "1561215064613068810": "1561285569068273674", // Euphie
+    "1561221189970567380": "1561287030703661126", // Euphie (1)
+    "1561215584358895758": "1561287096084336690", // Euphie (2)
+};
+
+function getSpotifyEmoji(client = null, player = null) {
+    // 1. Try application emoji cache
+    if (client?.application?.emojis?.cache) {
+        const appEmoji = client.application.emojis.cache.find((e) => e.name === "spotify");
+        if (appEmoji) return `<:spotify:${appEmoji.id}>`;
+    }
+
+    // 2. Try guild emojis
+    if (client?.emojis?.cache) {
+        const guildEmoji = client.emojis.cache.find((e) => e.name === "spotify");
+        if (guildEmoji) return `<:spotify:${guildEmoji.id}>`;
+    }
+
+    // 3. Fallback by client.botId
+    if (client?.botId && SPOTIFY_EMOJIS[client.botId]) {
+        return `<:spotify:${SPOTIFY_EMOJIS[client.botId]}>`;
+    }
+
+    // 4. Fallback by client.user.id
+    if (client?.user?.id && BOT_USER_IDS[client.user.id]) {
+        return `<:spotify:${BOT_USER_IDS[client.user.id]}>`;
+    }
+
+    // 5. Try player session owner from coordinator
+    if (player?.voiceChannel) {
+        try {
+            const coordinator = require("./mongoCoordinator");
+            const sessionOwner = coordinator.getSessionOwner(player.voiceChannel);
+            if (sessionOwner && SPOTIFY_EMOJIS[sessionOwner]) {
+                return `<:spotify:${SPOTIFY_EMOJIS[sessionOwner]}>`;
+            }
+        } catch (_) {}
+    }
+
+    // Default to Euphie Main
+    return "<:spotify:1561285569068273674>";
+}
+
 /**
  * Create the "Now Playing" container using Components V2
- * Format for .fmbot scrobbling: "<:spotify:emoji> Started playing [song name]" with clickable Spotify link
+ * Format for .fmbot scrobbling: "<:spotify:emoji> Started playing [Song Title by Artist](Spotify URL)"
  * No image, just the embed message
  */
-function createNowPlayingContainer(track, player, guildData, musicardBuffer) {
+function createNowPlayingContainer(track, player, guildData, musicardBuffer, client = null) {
     const container = new ContainerBuilder();
 
     const trackTitle = track?.info?.title || "Unknown";
-    const trackAuthor = track?.info?.author || "Unknown Artist";
+    const trackAuthor = track?.info?.author || "";
     const trackUri = track?.info?.uri || "";
     const trackSource = track?.info?.sourceName || "spotify";
+
+    const activeClient = client || player?.node?.riffy?.client || player?.client || null;
+    const spotifyEmoji = getSpotifyEmoji(activeClient, player);
 
     // Create Spotify URL from URI if available
     let spotifyUrl = "";
@@ -60,28 +114,26 @@ function createNowPlayingContainer(track, player, guildData, musicardBuffer) {
             }
         } else if (trackUri.startsWith("spotify:track:")) {
             // Convert Spotify URI to URL
-            // URI format: spotify:track:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-            // URL format: https://open.spotify.com/track/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx?autoplay_ok=1
             const trackId = trackUri.replace("spotify:track:", "");
             spotifyUrl = `https://open.spotify.com/track/${trackId}?autoplay_ok=1`;
         }
+    } else if (trackUri && trackUri.startsWith("http")) {
+        spotifyUrl = trackUri;
     }
 
-    // Format the message for .fmbot
-    // Format: "<:spotify:emoji> Started playing [Song Name • Artist](Spotify URL)"
-    let messageContent = `<:spotify:1560296021383184545> Started playing ${trackTitle}`;
+    // Format: "<:spotify:emoji> Started playing [Song Title by Artist](Spotify URL)"
+    const displayText = trackAuthor && trackAuthor !== "Unknown Artist"
+        ? `${trackTitle} by ${trackAuthor}`
+        : trackTitle;
 
-    // If we have a Spotify URL, make the song name clickable with artist
+    let messageContent = `${spotifyEmoji} Started playing ${displayText}`;
     if (spotifyUrl) {
-        const displayText = `${trackTitle} • ${trackAuthor}`;
-        messageContent = `<:spotify:1560296021383184545> Started playing [${displayText}](${spotifyUrl})`;
+        messageContent = `${spotifyEmoji} Started playing [${displayText}](${spotifyUrl})`;
     }
 
     container.addTextDisplayComponents(
         new TextDisplayBuilder().setContent(messageContent)
     );
-
-    // No musicard image - removed as requested
 
     return container;
 }
@@ -205,6 +257,7 @@ function capitalize(str) {
 }
 
 module.exports = {
+    getSpotifyEmoji,
     createNowPlayingContainer,
     createQueueContainer,
     formatDuration,

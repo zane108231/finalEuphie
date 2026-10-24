@@ -3,6 +3,7 @@ const path = require("path");
 const { WebhookClient, MessageFlags } = require("discord.js");
 const config = require("../../config");
 const { buildStatusContainer } = require("../utils/statusPage");
+const { getDB, isDBConnected } = require("../utils/database");
 
 const STATUS_STORE_PATH = path.join(__dirname, "..", "..", "data", "status-webhook.json");
 const UPDATE_INTERVAL_MS = 60 * 1000;
@@ -13,7 +14,15 @@ let updateTimer = null;
 let lastSnapshot = null;
 let activeClient = null;
 
-function loadMessageId() {
+async function loadMessageId() {
+    if (isDBConnected()) {
+        try {
+            const db = getDB();
+            const doc = await db.collection("botSettings").findOne({ key: "statusWebhookMessageId" });
+            if (doc?.value) return doc.value;
+        } catch (_) {}
+    }
+
     if (!fs.existsSync(STATUS_STORE_PATH)) return null;
 
     try {
@@ -25,13 +34,30 @@ function loadMessageId() {
 }
 
 function saveMessageId(id) {
-    const dir = path.dirname(STATUS_STORE_PATH);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+    if (isDBConnected()) {
+        try {
+            const db = getDB();
+            if (id) {
+                db.collection("botSettings").updateOne(
+                    { key: "statusWebhookMessageId" },
+                    { $set: { key: "statusWebhookMessageId", value: id, updatedAt: Date.now() } },
+                    { upsert: true }
+                ).catch(() => {});
+            } else {
+                db.collection("botSettings").deleteOne({ key: "statusWebhookMessageId" }).catch(() => {});
+            }
+        } catch (_) {}
     }
 
-    const payload = id ? { messageId: id } : {};
-    fs.writeFileSync(STATUS_STORE_PATH, JSON.stringify(payload, null, 2), "utf-8");
+    try {
+        const dir = path.dirname(STATUS_STORE_PATH);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+
+        const payload = id ? { messageId: id } : {};
+        fs.writeFileSync(STATUS_STORE_PATH, JSON.stringify(payload, null, 2), "utf-8");
+    } catch (_) {}
 }
 
 function getStatusSnapshot(client) {
@@ -90,14 +116,14 @@ function scheduleStatusUpdate(client, force = false) {
     });
 }
 
-function startStatusMonitor(client) {
+async function startStatusMonitor(client) {
     if (!config.statusWebhookUrl) {
         console.warn("[euphire] STATUS_WEBHOOK_URL not set — status monitor disabled.");
         return;
     }
 
     activeClient = client;
-    messageId = loadMessageId();
+    messageId = await loadMessageId();
 
     setTimeout(() => {
         scheduleStatusUpdate(client, true);
