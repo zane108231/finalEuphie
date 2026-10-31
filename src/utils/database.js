@@ -53,6 +53,10 @@ async function createIndexes() {
         
         // Server stats collection indexes
         await db.collection('serverStats').createIndex({ userId: 1, guildId: 1 }, { unique: true });
+
+        // Per-server listening time used for the 100-hour bot model milestone
+        await db.collection('modelListeningStats').createIndex({ guildId: 1, userId: 1 }, { unique: true });
+        await db.collection('modelListeningStats').createIndex({ guildId: 1, listeningMs: -1 });
         
         // Track stats collection indexes
         await db.collection('trackStats').createIndex({ userId: 1, trackId: 1 }, { unique: true });

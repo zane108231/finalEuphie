@@ -7,6 +7,7 @@ const { scheduleStatusUpdate } = require("../services/statusMonitor");
 const { markPlayerIdle } = require("../utils/playback");
 const { resetSessionPermissions } = require("../utils/permissions");
 const { startSession, updateSessionProgress, endSession, addSessionParticipant, removeSessionParticipant } = require("../utils/mongoStats");
+const { startPlayerTracking, stopPlayerTracking } = require("../utils/modelMilestones");
 const { updateNowPlaying, scrobble } = require("../utils/lastfm");
 const coordinator = require("../utils/mongoCoordinator");
 const config = require("../../config");
@@ -535,6 +536,8 @@ function setupPlayerHandler(client) {
                 console.error("[euphire] Stack:", err.stack);
             }
 
+            startPlayerTracking(client, player);
+
             // Start voice channel monitoring
             startVoiceChannelMonitoring(client, player.guildId);
 
@@ -551,6 +554,7 @@ function setupPlayerHandler(client) {
     client.riffy.on("trackEnd", async (player, track, payload) => {
         try {
             const guildData = getGuildData(player.guildId);
+            await stopPlayerTracking(player, true);
 
             console.log("[euphire] trackEnd event fired for track:", track?.info?.title);
             let queueUpdated = false;
@@ -678,6 +682,7 @@ function setupPlayerHandler(client) {
             }
 
             const guildData = getGuildData(player.guildId);
+            await stopPlayerTracking(player, true);
 
             // Last.fm scrobbling: clear all pending scrobble timers for this session
             try {
@@ -810,6 +815,7 @@ function setupPlayerHandler(client) {
     // --- Player Disconnect ---
     client.riffy.on("playerDisconnect", async (player) => {
         const guildData = getGuildData(player.guildId);
+        await stopPlayerTracking(player, true);
         if (guildData.recreatingPlayer) return;
 
         console.log(`[euphire] playerDisconnect fired for bot ${client.botId} in guild ${player.guildId}`);
@@ -886,6 +892,7 @@ function setupPlayerHandler(client) {
     // --- Track Error / Stuck ---
     client.riffy.on("trackError", async (player, track, payload) => {
         console.error(`[euphire] Track error in ${player.guildId} for "${track.info.title}":`, payload.error || payload);
+        stopPlayerTracking(player);
         const guildData = getGuildData(player.guildId);
         
         // End statistics session (error - not natural completion)
@@ -907,6 +914,7 @@ function setupPlayerHandler(client) {
 
     client.riffy.on("trackStuck", async (player, track, payload) => {
         console.warn(`[euphire] Track stuck in ${player.guildId} for "${track.info.title}" (${payload.thresholdMs}ms)`);
+        stopPlayerTracking(player);
         
         // End statistics session (stuck - not natural completion)
         try {

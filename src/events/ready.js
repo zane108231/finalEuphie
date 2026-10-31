@@ -57,13 +57,30 @@ module.exports = {
             console.error("[euphire] Failed to save guild names:", err.message);
         }
 
-        // Remove global slash commands so Discord stops showing /play "thinking"
+        // Keep the owner-only profile command on the primary bot, and clear the
+        // other bot applications so only one /botprofile is registered.
         try {
             const rest = new REST({ version: "10" }).setToken(client.token);
-            await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
-            console.log("[euphire] Cleared slash commands. Use !help for prefix commands.");
+            const commands = client.botId === "euphie_main"
+                ? [
+                    require("../commands/botprofile").data.toJSON(),
+                    ...require("../commands/model").commands.map((command) => command.data.toJSON()),
+                ]
+                : [];
+            await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+            for (const guildId of client.guilds.cache.keys()) {
+                await rest.put(
+                    Routes.applicationGuildCommands(client.user.id, guildId),
+                    { body: [] }
+                );
+            }
+            console.log(
+                commands.length
+                    ? "[euphire] Registered the owner profile and model commands; cleared server-specific commands."
+                    : "[euphire] Cleared global and server-specific slash commands for this secondary bot."
+            );
         } catch (error) {
-            console.error("[euphire] Failed to clear slash commands:", error);
+            console.error("[euphire] Failed to synchronize slash commands:", error);
         }
     },
 };

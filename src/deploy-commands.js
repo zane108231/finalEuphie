@@ -12,10 +12,16 @@ const rest = new REST({ version: "10" }).setToken(process.env.BOT_TOKEN);
             process.exit(1);
         }
 
-        console.log("[euphire] Clearing global slash commands (prefix commands are used instead)...");
-        await rest.put(Routes.applicationCommands(appId), { body: [] });
-        console.log("[euphire] Slash commands cleared. Use !help in Discord.");
+        const commands = [
+            require("./commands/botprofile").data,
+            ...require("./commands/model").commands.map((command) => command.data),
+        ];
+        console.log("[euphire] Registering the owner profile and model commands...");
+        await rest.put(Routes.applicationCommands(appId), {
+            body: commands.map((command) => command.toJSON()),
+        });
+        console.log("[euphire] Registered /botprofile, /modelstats, /modelchannel, and /setmodel.");
     } catch (error) {
-        console.error("[euphire] Failed to clear slash commands:", error);
+        console.error("[euphire] Failed to register slash commands:", error);
     }
 })();
