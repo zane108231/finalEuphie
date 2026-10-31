@@ -3,15 +3,19 @@ const coordinator = require("./mongoCoordinator");
 
 const PRIMARY_BOT_ID = "euphie_main";
 
-async function applyGuildBotProfile(guildId, targetMember) {
-    const avatarUrl = targetMember.displayAvatarURL({ size: 1024, extension: "png" });
-    const response = await fetch(avatarUrl);
-    if (!response.ok) {
-        throw new Error(`Could not download the user's avatar (HTTP ${response.status}).`);
+async function applyGuildBotProfile(guildId, targetMember, { copyAvatar = true } = {}) {
+    let avatar;
+    if (copyAvatar) {
+        const avatarUrl = targetMember.displayAvatarURL({ size: 1024, extension: "png" });
+        const response = await fetch(avatarUrl);
+        if (!response.ok) {
+            throw new Error(`Could not download the user's avatar (HTTP ${response.status}).`);
+        }
+
+        const contentType = response.headers.get("content-type") || "image/png";
+        avatar = `data:${contentType};base64,${Buffer.from(await response.arrayBuffer()).toString("base64")}`;
     }
 
-    const contentType = response.headers.get("content-type") || "image/png";
-    const avatar = `data:${contentType};base64,${Buffer.from(await response.arrayBuffer()).toString("base64")}`;
     const baseName = targetMember.displayName;
     const clients = coordinator
         .getAllClients()
@@ -34,13 +38,15 @@ async function applyGuildBotProfile(guildId, targetMember) {
 
         try {
             const rest = new REST({ version: "10" }).setToken(client.token);
+            const body = { nick: nickname };
+            if (copyAvatar) body.avatar = avatar;
             await rest.patch(Routes.guildMember(guildId, "@me"), {
-                body: { nick: nickname, avatar },
+                body,
                 reason: `Server profile copied from ${targetMember.id}`,
             });
             updated.push({ botName, nickname });
         } catch (error) {
-            console.error(`[euphire] Failed to update server profile for ${botName} in ${guildId}:`, error);
+            console.error(`[euphire] Failed to update server profile for ${botName} in ${guildId}: ${error.message}`);
             errors.push({ botName, error });
         }
     }
@@ -73,4 +79,29 @@ async function resetGuildBotProfile(guildId) {
     return { updated, errors };
 }
 
-module.exports = { applyGuildBotProfile, resetGuildBotProfile };
+async function applyGuildBotAvatar(guildId, avatar) {
+    const clients = coordinator
+        .getAllClients()
+        .filter((client) => client.guilds.cache.has(guildId));
+    const updated = [];
+    const errors = [];
+
+    for (const client of clients) {
+        const botName = client.user?.username || client.botId || "Euphie";
+        try {
+            const rest = new REST({ version: "10" }).setToken(client.token);
+            await rest.patch(Routes.guildMember(guildId, "@me"), {
+                body: { avatar },
+                reason: "Server model uploaded a custom Euphie avatar",
+            });
+            updated.push(botName);
+        } catch (error) {
+            console.error(`[euphire] Failed to update server avatar for ${botName} in ${guildId}: ${error.message}`);
+            errors.push({ botName, error });
+        }
+    }
+
+    return { updated, errors };
+}
+
+module.exports = { applyGuildBotProfile, resetGuildBotProfile, applyGuildBotAvatar };
