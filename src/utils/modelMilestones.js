@@ -77,7 +77,10 @@ async function notifyModel(guildId, userId, channelId) {
 }
 
 async function applyModel(guildId, targetMember, channelId = null) {
-    const result = await applyGuildBotProfile(guildId, targetMember, { copyAvatar: false });
+    const result = await applyGuildBotProfile(guildId, targetMember, {
+        copyName: false,
+        copyAvatar: true,
+    });
     if (!result.updated.length) {
         throw new Error(`Could not update any Euphie profiles in server ${guildId}.`);
     }

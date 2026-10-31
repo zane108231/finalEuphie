@@ -3,7 +3,11 @@ const coordinator = require("./mongoCoordinator");
 
 const PRIMARY_BOT_ID = "euphie_main";
 
-async function applyGuildBotProfile(guildId, targetMember, { copyAvatar = true } = {}) {
+async function applyGuildBotProfile(
+    guildId,
+    targetMember,
+    { copyAvatar = true, copyName = true } = {}
+) {
     let avatar;
     if (copyAvatar) {
         const avatarUrl = targetMember.displayAvatarURL({ size: 1024, extension: "png" });
@@ -33,12 +37,14 @@ async function applyGuildBotProfile(guildId, targetMember, { copyAvatar = true }
         const suffix = client.botId === PRIMARY_BOT_ID
             ? ""
             : `(${client.botId.match(/^euphie_(\d+)$/)?.[1] || ""})`;
-        const nickname = `${baseName.slice(0, 32 - suffix.length)}${suffix}`;
+        const nickname = copyName
+            ? `${baseName.slice(0, 32 - suffix.length)}${suffix}`
+            : null;
         const botName = client.user?.username || client.botId || "Euphie";
 
         try {
             const rest = new REST({ version: "10" }).setToken(client.token);
-            const body = { nick: nickname };
+            const body = { nick: copyName ? nickname : null };
             if (copyAvatar) body.avatar = avatar;
             await rest.patch(Routes.guildMember(guildId, "@me"), {
                 body,
@@ -79,7 +85,7 @@ async function resetGuildBotProfile(guildId) {
     return { updated, errors };
 }
 
-async function applyGuildBotAvatar(guildId, avatar) {
+async function applyGuildBotSettings(guildId, changes, reason) {
     const clients = coordinator
         .getAllClients()
         .filter((client) => client.guilds.cache.has(guildId));
@@ -90,9 +96,17 @@ async function applyGuildBotAvatar(guildId, avatar) {
         const botName = client.user?.username || client.botId || "Euphie";
         try {
             const rest = new REST({ version: "10" }).setToken(client.token);
+            const body = { ...changes };
+            if (typeof body.nickBase === "string") {
+                const suffix = client.botId === PRIMARY_BOT_ID
+                    ? ""
+                    : `(${client.botId.match(/^euphie_(\d+)$/)?.[1] || ""})`;
+                body.nick = `${body.nickBase.slice(0, 32 - suffix.length)}${suffix}`;
+                delete body.nickBase;
+            }
             await rest.patch(Routes.guildMember(guildId, "@me"), {
-                body: { avatar },
-                reason: "Server model uploaded a custom Euphie avatar",
+                body,
+                reason,
             });
             updated.push(botName);
         } catch (error) {
@@ -104,4 +118,17 @@ async function applyGuildBotAvatar(guildId, avatar) {
     return { updated, errors };
 }
 
-module.exports = { applyGuildBotProfile, resetGuildBotProfile, applyGuildBotAvatar };
+async function applyGuildBotAvatar(guildId, avatar) {
+    return applyGuildBotSettings(
+        guildId,
+        { avatar },
+        "Server model uploaded a custom Euphie avatar"
+    );
+}
+
+module.exports = {
+    applyGuildBotProfile,
+    resetGuildBotProfile,
+    applyGuildBotAvatar,
+    applyGuildBotSettings,
+};

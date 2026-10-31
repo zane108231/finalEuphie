@@ -1,4 +1,4 @@
-const { REST, Routes, ActivityType, MessageFlags } = require("discord.js");
+const { REST, Routes, ActivityType } = require("discord.js");
 const { getDB, isDBConnected } = require("../utils/database");
 const { getGuildData } = require("../utils/mongoGuildData");
 const { startStatusMonitor } = require("../services/statusMonitor");
@@ -18,26 +18,10 @@ module.exports = {
 
         startStatusMonitor(client);
 
-        // Cycling statuses
-        const statuses = [
-            "Pretending to be a DJ",
-            "!help for commands",
-        ];
-
-        // Set initial activity
         client.user.setPresence({
-            activities: [{ name: statuses[0], type: ActivityType.Playing }],
+            activities: [{ name: "e!help", type: ActivityType.Listening }],
             status: "online",
         });
-
-        let statusIndex = 0;
-        setInterval(() => {
-            statusIndex = (statusIndex + 1) % statuses.length;
-            client.user.setPresence({
-                activities: [{ name: statuses[statusIndex], type: ActivityType.Playing }],
-                status: "online",
-            });
-        }, 120000); // 2 minutes
 
         // Save guild names to MongoDB for stats tracking
         try {
@@ -65,6 +49,7 @@ module.exports = {
                 ? [
                     require("../commands/botprofile").data.toJSON(),
                     require("../commands/modelprofile").data.toJSON(),
+                    require("../commands/developerprofile").data.toJSON(),
                     ...require("../commands/model").commands.map((command) => command.data.toJSON()),
                 ]
                 : [];

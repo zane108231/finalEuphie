@@ -13,7 +13,7 @@ euphire is a ChatPlay-focused Discord music bot that also operates like a standa
 - Standard music playback with multi-guild Lavalink support
 - Supports queue management, shuffle, seek, volume, loop, and now playing
 - Built-in commands for help, bot stats, and track information
-- Server-local Euphie model milestone after 100 hours of active listening (`/modelstats`, `/modelchannel`, and `/setmodel`; bot-owner only); `/botprofile copy` and `/botprofile reset` manage the server-specific profile, and the current model can upload an avatar with `/modelprofile`
+- Server-local Euphie model milestone after 100 hours of active listening (`/modelstats`, `/modelchannel`, and `/setmodel`; bot-owner only); `/botprofile copy` and `/botprofile reset` manage the server-specific profile, the current model can upload an avatar with `/modelprofile`, and the developer can configure profiles with `/developerprofile`
 
 ## Docker Deployment (Recommended)
 
