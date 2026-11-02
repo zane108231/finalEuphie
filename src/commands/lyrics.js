@@ -141,7 +141,7 @@ function buildLyricsPagePayload(session, sessionId) {
         };
     } else {
         embed.setFooter({
-            text: `Powered by Genius`,
+            text: `Euphie`,
         });
 
         return {

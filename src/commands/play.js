@@ -1,7 +1,12 @@
-const { SlashCommandBuilder, MessageFlags, ContainerBuilder, TextDisplayBuilder, EmbedBuilder } = require("discord.js");
+const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js");
 const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
-const { isDuplicateTrack, startIfIdle, ensurePlayer, setAnnounceChannel, getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
+const { startIfIdle, ensurePlayer, setAnnounceChannel, getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
 const coordinator = require("../utils/mongoCoordinator");
+const {
+    searchYoutubeTrack,
+    getTrackDisplayName,
+    setTrackDisplayMetadata,
+} = require("../utils/search");
 const config = require("../../config");
 
 // mm:ss, zero padded (03:07)
@@ -44,6 +49,18 @@ function etaUntilIndex(player, index) {
     return eta;
 }
 
+function getPlaylistQueueDetails(player, startIndex, wasIdle) {
+    if (wasIdle && startIndex === 0) return {};
+
+    const positionIndex =
+        wasIdle && startIndex > 0 ? startIndex - 1 : startIndex;
+    return {
+        eta: formatPlaylistDuration(etaUntilIndex(player, positionIndex)),
+        upcomingPosition: positionIndex + 1,
+        queuePosition: positionIndex + (player.current ? 2 : 1),
+    };
+}
+
 // "Added Track" embed (matches the reference screenshot)
 function buildAddedTrackEmbed(client, user, { trackValue, eta, length, upcomingPos, queuePos, thumbnail, extraField }) {
     const embed = new EmbedBuilder()
@@ -78,13 +95,13 @@ function buildAddedTrackEmbed(client, user, { trackValue, eta, length, upcomingP
 async function sendPublicEmbed(interaction, embed) {
     if (interaction.replacePlaylistSearchMessage && interaction.message?.edit) {
         try {
-            await interaction.message.edit({
+            const message = await interaction.message.edit({
                 embeds: [embed],
                 components: [],
             });
             interaction.playlistSearchMessageUpdated = true;
             await interaction.deleteReply().catch(() => {});
-            return;
+            return message;
         } catch (error) {
             console.error(
                 "[euphire] Could not replace playlist search results with the added playlist card:",
@@ -94,9 +111,21 @@ async function sendPublicEmbed(interaction, embed) {
     }
 
     try {
-        await interaction.channel.send({ embeds: [embed] });
+        const message = await interaction.channel.send({ embeds: [embed] });
         await interaction.deleteReply().catch(() => {});
+        return message;
     } catch (err) {
+        await interaction.editReply({ embeds: [embed] });
+        return interaction.fetchReply();
+    }
+}
+
+async function updatePublicEmbed(interaction, message, embed) {
+    if (message?.edit) {
+        await message.edit({ embeds: [embed], components: [] });
+    } else if (interaction.playlistSearchMessageUpdated && interaction.message?.edit) {
+        await interaction.message.edit({ embeds: [embed], components: [] });
+    } else {
         await interaction.editReply({ embeds: [embed] });
     }
 }
@@ -109,13 +138,22 @@ function formatPlaylistDuration(ms) {
     return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+function getLoadFailureMessage(exception) {
+    if (typeof exception === "string") return exception;
+    if (!exception || typeof exception !== "object") return "";
+    return [exception.severity, exception.message, exception.cause]
+        .filter((value) => typeof value === "string" && value.trim())
+        .join(": ")
+        .slice(0, 500);
+}
+
 function buildAddedPlaylistEmbed(
     client,
     playlist,
     playlistInfo,
     tracks,
-    addedTrackCount,
-    length
+    length,
+    { trackCount = playlist?.trackCount || tracks.length, eta, upcomingPosition, queuePosition } = {}
 ) {
     const name =
         playlistInfo?.name || playlist?.name || "Unknown Playlist";
@@ -144,16 +182,71 @@ function buildAddedPlaylistEmbed(
             },
             {
                 name: "Tracks",
-                value: String(
-                    playlist?.trackCount || addedTrackCount || tracks.length
-                ),
+                value: String(trackCount),
                 inline: true,
             }
         );
+    if (eta !== undefined) {
+        embed.addFields(
+            {
+                name: "Estimated time until played",
+                value: eta,
+                inline: false,
+            },
+            {
+                name: "Position in upcoming",
+                value: String(upcomingPosition),
+                inline: true,
+            },
+            {
+                name: "Position in queue",
+                value: String(queuePosition),
+                inline: true,
+            }
+        );
+    }
     if (artwork && /^https?:\/\//i.test(artwork)) {
         embed.setThumbnail(artwork);
     }
     return embed;
+}
+
+async function resolveSpotifyTrackAudio(riffy, track, requester) {
+    if (String(track?.info?.sourceName || "").toLowerCase() !== "spotify") {
+        return track;
+    }
+
+    try {
+        const youtubeTrack = await searchYoutubeTrack(riffy, track, requester);
+        if (!youtubeTrack) {
+            console.warn(
+                `[euphire] No matching YouTube video found for Spotify track "${track.info.title}" by "${track.info.author}"`
+            );
+            return null;
+        }
+
+        track.track = youtubeTrack.track;
+        return track;
+    } catch (error) {
+        console.error(
+            `[euphire] YouTube search failed for Spotify track "${track?.info?.title || "Unknown"}":`,
+            error.message
+        );
+        return null;
+    }
+}
+
+async function resolveSpotifyTracksAudio(riffy, tracks, requester, onBatch) {
+    for (let offset = 0; offset < tracks.length; offset += 4) {
+        const batch = await Promise.all(
+            tracks.slice(offset, offset + 4).map((track) =>
+                resolveSpotifyTrackAudio(riffy, track, requester)
+            )
+        );
+        const playableBatch = batch.filter(Boolean);
+        const batchFailedCount = batch.length - playableBatch.length;
+        if (onBatch) await onBatch(playableBatch, batchFailedCount);
+    }
 }
 
 module.exports = {
@@ -288,13 +381,17 @@ module.exports = {
         }
 
         try {
+            const trimmedQuery = query.trim();
+            const isSpotifyUrl =
+                /^https?:\/\/(?:www\.)?open\.spotify\.com\//i.test(trimmedQuery);
+            const isUrl = /^https?:\/\//i.test(trimmedQuery);
             const result = await client.riffy.resolve({
-                query: query.trim(),
-                source: "spsearch",
+                query: trimmedQuery,
+                source: isSpotifyUrl ? "spsearch" : "ytsearch",
                 requester: interaction.user,
             });
 
-            const { loadType, tracks, playlistInfo } = result;
+            const { loadType, tracks, playlistInfo, exception } = result;
 
             // Handle all Lavalink v3 + v4 loadType variants
             if (
@@ -302,96 +399,175 @@ module.exports = {
                 loadType === "playlist_loaded" ||
                 loadType === "PLAYLIST_LOADED"
             ) {
-                const duplicates = [];
                 const addedTracks = [];
-                let addedLength = 0;
-                let playlistLength = 0;
+                let failedTrackCount = 0;
+                const playlistLength = tracks.reduce(
+                    (total, track) => total + (track.info.length || 0),
+                    0
+                );
 
-                // Where the first added song will sit in the queue
-                const startIndex = player.queue.length;
                 const wasIdle = !player.playing && !player.paused;
-                const tracksToProcess = guildData.shuffle ? shuffleArray(tracks) : tracks;
+                const startIndex = player.queue.length;
+                const orderedTracks = guildData.shuffle
+                    ? shuffleArray(tracks)
+                    : tracks;
 
-                for (const track of tracksToProcess) {
-                    track.info.requester = interaction.user;
-                    playlistLength += track.info.length || 0;
-
-                    if (isDuplicateTrack(player, track)) {
-                        duplicates.push(track.info.title || "Unknown");
-                    } else {
-                        player.queue.add(track);
-                        addedTracks.push(track.info.title || "Unknown");
-                        addedLength += track.info.length || 0;
+                let firstQueuedIndex = -1;
+                for (let index = 0; index < orderedTracks.length; index++) {
+                    const track = await resolveSpotifyTrackAudio(
+                        client.riffy,
+                        orderedTracks[index],
+                        interaction.user
+                    );
+                    if (!track) {
+                        failedTrackCount++;
+                        continue;
                     }
+
+                    track.info.requester = interaction.user;
+                    setTrackDisplayMetadata(track, null);
+
+                    player.queue.add(track);
+                    addedTracks.push(track.info.title || "Unknown");
+                    firstQueuedIndex = index;
+                    break;
                 }
+
+                if (firstQueuedIndex === -1) {
+                    return interaction.editReply({
+                        content: tracks.length > 0
+                            ? `❌ None of the ${tracks.length} Spotify tracks had a matching YouTube result.`
+                            : "❌ This playlist has no tracks to play.",
+                    });
+                }
+
                 interaction.playbackQueryQueued = addedTracks.length > 0;
                 if (interaction.playbackQueryQueued && interaction.onPlaybackQueued) {
                     await interaction.onPlaybackQueued(interaction, client);
                 }
-                if (
-                    interaction.playlistSearchSelection &&
-                    addedTracks.length === 0
-                ) {
-                    return interaction.editReply({
-                        content:
-                            "All tracks from that playlist are already playing or queued.",
-                    });
-                }
                 await startIfIdle(player);
 
-                const eta = wasIdle ? 0 : etaUntilIndex(player, startIndex);
-                const upcomingPos = startIndex === 0 ? "Next" : String(startIndex + 1);
-                const queuePos = String(startIndex + 1 + (wasIdle ? 0 : 1));
+                const playlistCardData =
+                    interaction.playlistSearchSelection || {
+                        name: playlistInfo?.name || "Unknown Playlist",
+                        url: playlistInfo?.url || "https://open.spotify.com",
+                        artworkUrl: playlistInfo?.artworkUrl || getArtwork(orderedTracks[0]),
+                        trackCount: tracks.length,
+                    };
+                const initialEmbed = buildAddedPlaylistEmbed(
+                    client,
+                    playlistCardData,
+                    playlistInfo,
+                    orderedTracks,
+                    playlistLength,
+                    getPlaylistQueueDetails(player, startIndex, wasIdle)
+                );
+                const progressMessage = await sendPublicEmbed(
+                    interaction,
+                    initialEmbed
+                );
 
-                const embed = interaction.playlistSearchSelection
-                    ? buildAddedPlaylistEmbed(
-                          client,
-                          interaction.playlistSearchSelection,
-                          playlistInfo,
-                          tracks,
-                          addedTracks.length,
-                          playlistLength
-                      )
-                    : buildAddedTrackEmbed(client, interaction.user, {
-                          trackValue: `${playlistInfo?.name || "Unknown Playlist"} (${addedTracks.length} songs)`,
-                          eta: fmt(eta),
-                          length: fmt(addedLength),
-                          upcomingPos,
-                          queuePos,
-                          thumbnail: playlistInfo?.artworkUrl || getArtwork(tracks[0]),
-                          extraField: duplicates.length > 0
-                              ? { name: "Duplicates Skipped", value: `${duplicates.length} songs already in queue`, inline: false }
-                              : null,
-                      });
+                const remainingTracks = orderedTracks.slice(firstQueuedIndex + 1);
+                void (async () => {
+                    try {
+                        await resolveSpotifyTracksAudio(
+                            client.riffy,
+                            remainingTracks,
+                            interaction.user,
+                            async (playableBatch, batchFailedCount) => {
+                                failedTrackCount += batchFailedCount;
+                                for (const track of playableBatch) {
+                                    track.info.requester = interaction.user;
+                                    setTrackDisplayMetadata(track, null);
+                                    player.queue.add(track);
+                                    addedTracks.push(track.info.title || "Unknown");
+                                }
+                            }
+                        );
 
-                await sendPublicEmbed(interaction, embed);
+                        if (failedTrackCount) {
+                            console.warn(
+                                `[euphire] Spotify playlist "${playlistCardData.name}" had ${failedTrackCount} track(s) without a matching YouTube result.`
+                            );
+                        }
+                        const finalEmbed = buildAddedPlaylistEmbed(
+                            client,
+                            playlistCardData,
+                            playlistInfo,
+                            orderedTracks,
+                            playlistLength,
+                            {
+                                ...getPlaylistQueueDetails(
+                                    player,
+                                    startIndex,
+                                    wasIdle
+                                ),
+                                trackCount: addedTracks.length,
+                            }
+                        );
+                        await updatePublicEmbed(
+                            interaction,
+                            progressMessage,
+                            finalEmbed
+                        );
+                    } catch (error) {
+                        console.error(
+                            `[euphire] Failed to finish queueing Spotify playlist "${playlistInfo?.name || playlistCardData.name}":`,
+                            error
+                        );
+                        const failedEmbed = buildAddedPlaylistEmbed(
+                            client,
+                            playlistCardData,
+                            playlistInfo,
+                            orderedTracks,
+                            playlistLength,
+                            {
+                                ...getPlaylistQueueDetails(
+                                    player,
+                                    startIndex,
+                                    wasIdle
+                                ),
+                                trackCount: addedTracks.length,
+                            }
+                        );
+                        await updatePublicEmbed(
+                            interaction,
+                            progressMessage,
+                            failedEmbed
+                        ).catch((editError) => {
+                            console.error(
+                                "[euphire] Could not update playlist queue status:",
+                                editError.message
+                            );
+                        });
+                    }
+                })();
             } else if (
                 loadType === "search" ||
                 loadType === "track" ||
                 loadType === "SEARCH_RESULT" ||
                 loadType === "TRACK_LOADED"
             ) {
-                const track = tracks[0];
+                let track = tracks[0];
                 if (!track) {
                     return interaction.editReply({ content: "❌ No results found." });
                 }
 
-                if (isDuplicateTrack(player, track)) {
-                    const container = new ContainerBuilder();
-                    container.addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent(
-                            "### ⚠️ Duplicate Detected\n\n" +
-                            "**Track**\n" +
-                            `-# ${track.info.title}\n\n` +
-                            "**Status**\n" +
-                            `-# Already in queue or currently playing`
-                        )
-                    );
-                    return await interaction.editReply({
-                        components: [container],
-                        flags: MessageFlags.IsComponentsV2,
+                track = await resolveSpotifyTrackAudio(
+                    client.riffy,
+                    track,
+                    interaction.user
+                );
+                if (!track) {
+                    return interaction.editReply({
+                        content: "❌ Could not find a matching YouTube video for that Spotify song.",
                     });
                 }
+
+                setTrackDisplayMetadata(
+                    track,
+                    isSpotifyUrl ? null : trimmedQuery
+                );
 
                 track.info.requester = interaction.user;
                 const shouldStart = !player.playing && !player.paused;
@@ -414,7 +590,7 @@ module.exports = {
                     const queuePos = String(queueLength + 1); // +1 for the currently playing track
 
                     const embed = buildAddedTrackEmbed(client, interaction.user, {
-                        trackValue: `[${track.info.title} by ${track.info.author}](${track.info.uri})`,
+                        trackValue: `[${getTrackDisplayName(track)}](${track.info.uri})`,
                         eta: fmt(eta),
                         length: fmt(track.info.length),
                         upcomingPos,
@@ -427,12 +603,19 @@ module.exports = {
                     await interaction.deleteReply().catch(() => {});
                 }
             } else {
-                console.log(`[euphire] Unhandled loadType: "${loadType}"`);
-                return interaction.editReply({ content: `❌ No results found. (loadType: ${loadType})` });
+                const failure = getLoadFailureMessage(exception);
+                console.warn(
+                    `[euphire] No playable results for "${query}" (loadType: ${loadType})${failure ? `: ${failure}` : ""}`
+                );
+                return interaction.editReply({
+                    content: `❌ Could not load that track or playlist${failure ? `: ${failure}` : ` (Lavalink: ${loadType})`}`,
+                });
             }
         } catch (error) {
-            console.error("[euphire] Play error:", error);
-            return interaction.editReply({ content: "❌ An error occurred while searching." });
+            console.error("[euphire] Play error:", error.message);
+            return interaction.editReply({
+                content: `❌ An error occurred while searching: ${error.message}`,
+            });
         }
     },
 };

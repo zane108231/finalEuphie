@@ -13,6 +13,33 @@ function isHttpUrl(query) {
     return /^https?:\/\//i.test(String(query || "").trim());
 }
 
+function normalizeSpotifyUrl(query) {
+    const trimmed = String(query || "").trim();
+    if (!isHttpUrl(trimmed)) return trimmed;
+
+    try {
+        const url = new URL(trimmed);
+        if (url.hostname !== "open.spotify.com" && url.hostname !== "www.open.spotify.com") {
+            return trimmed;
+        }
+
+        const segments = url.pathname.split("/").filter(Boolean);
+        if (/^intl-[a-z]{2}(?:-[a-z]{2})?$/i.test(segments[0] || "")) {
+            segments.shift();
+        }
+        if (
+            segments.length >= 2 &&
+            ["track", "playlist", "album", "artist", "episode", "show"].includes(segments[0])
+        ) {
+            return `https://open.spotify.com/${segments[0]}/${segments[1]}`;
+        }
+    } catch {
+        return trimmed;
+    }
+
+    return trimmed;
+}
+
 function pickNode(riffy, node) {
     if (node && typeof node !== "string" && node.rest) return node;
     if (typeof node === "string") {
@@ -77,15 +104,66 @@ function toResult(response, requester, node) {
 function buildIdentifiers(query, source) {
     const trimmed = String(query || "").trim();
     if (!trimmed) return [];
-    if (isHttpUrl(trimmed)) return [trimmed];
+    if (isHttpUrl(trimmed)) return [normalizeSpotifyUrl(trimmed)];
 
-    const prefixes = [];
     const primary = source || "spsearch";
-    prefixes.push(primary);
+    if (primary === "ytsearch") {
+        const plainQuery = trimmed.replace(/\s+(?:lyrics?|lyric\s+video)$/i, "").trim();
+        const queries = [
+            /\blyrics?\b/i.test(trimmed) ? trimmed : `${trimmed} lyrics`,
+            plainQuery,
+        ].filter((value, index, values) => value && values.indexOf(value) === index);
+        return queries.flatMap((searchQuery) =>
+            ["ytsearch", "ytmsearch"].map(
+                (prefix) => `${prefix}:${searchQuery}`
+            )
+        );
+    }
+
+    const prefixes = [primary];
     for (const extra of ["spsearch", "ytsearch", "ytmsearch", "scsearch"]) {
         if (!prefixes.includes(extra)) prefixes.push(extra);
     }
     return prefixes.map((prefix) => `${prefix}:${trimmed}`);
+}
+
+function rankSearchTracks(tracks, query) {
+    const queryWords = normalizeSearchText(query)
+        .split(" ")
+        .filter((word) => !["by", "lyrics", "lyric", "video", "official", "audio"].includes(word));
+    if (!queryWords.length) return tracks;
+
+    return tracks
+        .map((track, index) => {
+            const title = normalizeSearchText(track.info?.title || "");
+            const author = normalizeSearchText(track.info?.author || "");
+            const candidateWords = new Set(`${title} ${author}`.split(" "));
+            const titleWords = new Set(title.split(" "));
+            const matchedWords = queryWords.filter((word) => candidateWords.has(word));
+            const titleMatches = queryWords.filter((word) => titleWords.has(word));
+            const minimumMatches = Math.max(1, Math.ceil(queryWords.length * 0.6));
+            const isLyrics = /\b(lyrics?|with lyrics)\b/.test(title);
+            const officialAudioPenalty = /\bofficial audio\b/.test(title) ? 4 : 0;
+
+            return {
+                track,
+                index,
+                isLyrics,
+                score:
+                    matchedWords.length * 4 +
+                    titleMatches.length * 2 +
+                    -officialAudioPenalty,
+                relevant: matchedWords.length >= minimumMatches,
+            };
+        })
+        .filter((candidate) => candidate.relevant)
+        .sort(
+            (left, right) =>
+                Number(right.isLyrics) - Number(left.isLyrics) ||
+                right.score - left.score ||
+                left.index - right.index
+        )
+        .map((candidate) => candidate.track);
 }
 
 /**
@@ -104,6 +182,8 @@ async function resolveTracks(riffy, { query, source, requester, node } = {}) {
     }
 
     let lastResponse = null;
+    let rejectedSearchResults = false;
+    let fallbackSearchResult = null;
 
     for (const identifier of identifiers) {
         try {
@@ -116,6 +196,28 @@ async function resolveTracks(riffy, { query, source, requester, node } = {}) {
 
             if (SUCCESS_TYPES.has(response.loadType) && hasTracks(response)) {
                 const result = toResult(response, requester, requestNode);
+                if (/^(ytsearch|ytmsearch):/i.test(identifier)) {
+                    result.tracks = rankSearchTracks(result.tracks, identifier.replace(/^[^:]+:/, ""));
+                    if (!result.tracks.length) {
+                        rejectedSearchResults = true;
+                        continue;
+                    }
+                    const lyricResults = result.tracks.filter((track) =>
+                        /\b(lyrics?|with lyrics)\b/i.test(track.info?.title || "")
+                    );
+                    if (lyricResults.length) {
+                        result.tracks = lyricResults;
+                        riffy.emit(
+                            "debug",
+                            `[euphire] Search success for "${query}" via ${identifier}, lyric tracks: ${result.tracks.length}`
+                        );
+                        return result;
+                    }
+                    if (!fallbackSearchResult) {
+                        fallbackSearchResult = result;
+                    }
+                    continue;
+                }
                 riffy.emit(
                     "debug",
                     `[euphire] Search success for "${query}" via ${identifier}, tracks: ${result.tracks.length}`
@@ -127,7 +229,217 @@ async function resolveTracks(riffy, { query, source, requester, node } = {}) {
         }
     }
 
+    if (fallbackSearchResult) {
+        riffy.emit(
+            "debug",
+            `[euphire] No lyric result found for "${query}"; using the best matching non-lyric result`
+        );
+        return fallbackSearchResult;
+    }
+
+    if (
+        rejectedSearchResults &&
+        /^(ytsearch|ytmsearch)$/i.test(source || riffy.defaultSearchPlatform)
+    ) {
+        return toResult({ loadType: "empty", data: [] }, requester, requestNode);
+    }
+
     return toResult(lastResponse || { loadType: "empty", data: [] }, requester, requestNode);
+}
+
+async function searchYoutubeTrack(riffy, track, requester, node) {
+    const requestNode = pickNode(riffy, node);
+    if (!requestNode) throw new Error("Lavalink node is not available.");
+
+    const title = track?.info?.title?.trim();
+    const author = track?.info?.author?.trim();
+    if (!title) return null;
+
+    const queries = [
+        [title, author, "lyrics"],
+        [author, title, "lyrics"],
+        [title, author, "lyric video"],
+        [author, title],
+    ].map((parts) => parts.filter(Boolean).join(" "));
+    const titleWords = normalizeSearchText(title).split(" ").filter(Boolean);
+    const artistWords = normalizeSearchText(author || "").split(" ").filter(Boolean);
+    let bestLyricMatch = null;
+    let bestLyricScore = Number.NEGATIVE_INFINITY;
+    let bestFallbackMatch = null;
+    let bestFallbackScore = Number.NEGATIVE_INFINITY;
+
+    for (const query of [...new Set(queries)]) {
+        const response = await requestNode.rest.makeRequest(
+            "GET",
+            `/${requestNode.rest.version}/loadtracks?identifier=${encodeURIComponent(`ytsearch:${query}`)}`
+        );
+        const result = toResult(response, requester, requestNode);
+
+        for (const candidate of result.tracks) {
+            const candidateTitle = normalizeSearchText(candidate.info.title || "");
+            const candidateAuthor = normalizeSearchText(candidate.info.author || "");
+            const combined = `${candidateTitle} ${candidateAuthor}`;
+            const matchedTitleWords = titleWords.filter((word) =>
+                candidateTitle.includes(word)
+            ).length;
+            const titleMatch = titleWords.length
+                ? matchedTitleWords / titleWords.length
+                : 0;
+            const artistMatch = artistWords.length
+                ? artistWords.filter((word) => combined.includes(word)).length /
+                  artistWords.length
+                : 1;
+            if (titleMatch < 0.6 || (artistWords.length && artistMatch < 0.5)) {
+                continue;
+            }
+
+            const isLyrics = /\b(lyrics?|with lyrics)\b/.test(candidateTitle);
+            const isOfficialAudio = /\bofficial audio\b/.test(candidateTitle);
+
+            const score =
+                titleMatch * 10 +
+                artistMatch * 4 +
+                (isLyrics ? 8 : 0) -
+                (isOfficialAudio ? 4 : 0);
+            if (isLyrics && score > bestLyricScore) {
+                bestLyricMatch = candidate;
+                bestLyricScore = score;
+            } else if (!isLyrics && score > bestFallbackScore) {
+                bestFallbackMatch = candidate;
+                bestFallbackScore = score;
+            }
+        }
+
+        if (
+            bestLyricMatch &&
+            /\b(lyrics?|with lyrics)\b/.test(
+                normalizeSearchText(bestLyricMatch.info.title)
+            )
+        ) {
+            return bestLyricMatch;
+        }
+    }
+
+    return bestLyricMatch || bestFallbackMatch;
+}
+
+function normalizeSearchText(value) {
+    return String(value || "")
+        .toLowerCase()
+        .replace(/([a-z])([0-9])/g, "$1 $2")
+        .replace(/([0-9])([a-z])/g, "$1 $2")
+        .replace(/[^\p{L}\p{N}]+/gu, " ")
+        .trim()
+        .replace(/\s+/g, " ");
+}
+
+function getTrackDisplayName(track) {
+    const { title, author } = getTrackDisplayParts(track);
+    return author === "Unknown artist" ? title : `${title} by ${author}`;
+}
+
+function getTrackDisplayParts(track) {
+    const sourceName = String(track?.info?.sourceName || "").toLowerCase();
+    if (sourceName === "youtube" || sourceName === "youtube music") {
+        const parsed = parseVideoDisplayMetadata(track.info.title);
+        return {
+            title: track.info.displayTitle || parsed.title,
+            author: track.info.displayAuthor || parsed.author,
+        };
+    }
+
+    return {
+        title: cleanDisplayTitle(
+            track?.info?.displayTitle || track?.info?.title || "Unknown track"
+        ),
+        author: cleanDisplayArtist(
+            track?.info?.displayAuthor || track?.info?.author || "Unknown artist"
+        ),
+    };
+}
+
+function setTrackDisplayMetadata(track, query) {
+    if (!track?.info) return track;
+
+    const queryMatch = String(query || "").trim().match(/^(.+?)\s+by\s+(.+)$/i);
+    if (queryMatch) {
+        track.info.displayTitle = formatDisplayTitle(queryMatch[1]);
+        track.info.displayAuthor = formatDisplayArtist(queryMatch[2]);
+        return track;
+    }
+
+    const sourceName = String(track.info.sourceName || "").toLowerCase();
+    if (sourceName === "youtube" || sourceName === "youtube music") {
+        const parsed = parseVideoDisplayMetadata(track.info.title, query);
+        track.info.displayTitle = parsed.title;
+        track.info.displayAuthor = parsed.author;
+        return track;
+    }
+
+    track.info.displayTitle = cleanDisplayTitle(track.info.title);
+    track.info.displayAuthor = cleanDisplayArtist(track.info.author);
+    return track;
+}
+
+function parseVideoDisplayMetadata(videoTitle, query = "") {
+    const cleanTitle = cleanDisplayTitle(videoTitle);
+    const parts = cleanTitle
+        .split(/\s+[-–—]\s+/)
+        .map((part) => cleanDisplayTitle(part))
+        .filter(Boolean);
+
+    if (parts.length >= 2) {
+        const queryWords = normalizeSearchText(query)
+            .split(" ")
+            .filter((word) => !["by", "lyrics", "lyric", "video", "official", "audio"].includes(word));
+        const leftWords = new Set(normalizeSearchText(parts[0]).split(" "));
+        const rightWords = new Set(normalizeSearchText(parts[parts.length - 1]).split(" "));
+        const leftFirstMatch = queryWords.findIndex((word) => leftWords.has(word));
+        const rightFirstMatch = queryWords.findIndex((word) => rightWords.has(word));
+        const titleIndex =
+            leftFirstMatch !== -1 &&
+            (rightFirstMatch === -1 || leftFirstMatch < rightFirstMatch)
+                ? 0
+                : parts.length - 1;
+        const artistIndex = titleIndex === 0 ? parts.length - 1 : 0;
+
+        return {
+            title: formatDisplayTitle(parts[titleIndex]),
+            author: formatDisplayArtist(parts[artistIndex]),
+        };
+    }
+
+    return {
+        title: formatDisplayTitle(cleanTitle),
+        author: "Unknown artist",
+    };
+}
+
+function cleanDisplayTitle(value) {
+    return String(value || "Unknown track")
+        .replace(/\s*[\[(](?:official\s+)?(?:audio|lyrics?|lyric\s+video|music\s+video|visuali[sz]er)[^\])]*[\])]/gi, "")
+        .replace(/\s*[-–—]\s*(?:official\s+)?(?:audio|lyrics?|lyric\s+video|music\s+video|visuali[sz]er)\b.*$/i, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function cleanDisplayArtist(value) {
+    return String(value || "Unknown artist")
+        .replace(/\s*[-–—]\s*(?:official\s+)?(?:audio|lyrics?|lyric\s+video|music\s+video|visuali[sz]er)\b.*$/i, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function formatDisplayArtist(value) {
+    const artist = cleanDisplayArtist(value);
+    if (/^[a-z0-9]{2,4}$/i.test(artist)) return artist.toUpperCase();
+    return artist.replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
+}
+
+function formatDisplayTitle(value) {
+    return cleanDisplayTitle(value)
+        .toLowerCase()
+        .replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
 }
 
 function patchRiffyResolve(riffy) {
@@ -136,5 +448,12 @@ function patchRiffyResolve(riffy) {
 
 module.exports = {
     resolveTracks,
+    searchYoutubeTrack,
     patchRiffyResolve,
+    normalizeSpotifyUrl,
+    buildIdentifiers,
+    rankSearchTracks,
+    getTrackDisplayName,
+    getTrackDisplayParts,
+    setTrackDisplayMetadata,
 };

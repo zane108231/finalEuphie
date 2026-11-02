@@ -12,6 +12,7 @@ const {
     StringSelectMenuOptionBuilder,
 } = require("discord.js");
 const { ButtonStyle } = require("discord.js");
+const { getTrackDisplayName } = require("./search");
 
 /**
  * Format milliseconds to mm:ss
@@ -93,8 +94,10 @@ function getSpotifyEmoji(client = null, player = null) {
 function createNowPlayingContainer(track, player, guildData, musicardBuffer, client = null) {
     const container = new ContainerBuilder();
 
-    const trackTitle = track?.info?.title || "Unknown";
-    const trackAuthor = track?.info?.author || "";
+    const hasAuthor = Boolean(track?.info?.displayAuthor || track?.info?.author);
+    const displayName = hasAuthor
+        ? getTrackDisplayName(track)
+        : track?.info?.displayTitle || track?.info?.title || "Unknown";
     const trackUri = track?.info?.uri || "";
     const trackSource = track?.info?.sourceName || "spotify";
 
@@ -122,9 +125,7 @@ function createNowPlayingContainer(track, player, guildData, musicardBuffer, cli
     }
 
     // Format: "<:spotify:emoji> Started playing [Song Title by Artist](Spotify URL)"
-    const displayText = trackAuthor && trackAuthor !== "Unknown Artist"
-        ? `${trackTitle} by ${trackAuthor}`
-        : trackTitle;
+    const displayText = displayName;
 
     let messageContent = `${spotifyEmoji} Started playing ${displayText}`;
     if (spotifyUrl) {

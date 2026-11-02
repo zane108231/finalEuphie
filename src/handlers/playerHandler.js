@@ -9,13 +9,41 @@ const { resetSessionPermissions } = require("../utils/permissions");
 const { startSession, updateSessionProgress, endSession, addSessionParticipant, removeSessionParticipant } = require("../utils/mongoStats");
 const { startPlayerTracking, stopPlayerTracking } = require("../utils/modelMilestones");
 const { updateNowPlaying, scrobble } = require("../utils/lastfm");
+const { getTrackDisplayParts } = require("../utils/search");
 const coordinator = require("../utils/mongoCoordinator");
 const config = require("../../config");
 
 // Store scrobble timers per user (userId -> timeout)
 const scrobbleTimers = new Map();
+const trackErrorNotices = new Map();
 
 const UPDATE_INTERVAL_MS = 30 * 1000; // Increased to 30 seconds to reduce CPU load
+
+function queueTrackErrorNotice(channel, guildId, title) {
+    let notice = trackErrorNotices.get(guildId);
+    if (!notice) {
+        notice = { titles: [], timer: null };
+        trackErrorNotices.set(guildId, notice);
+    }
+
+    notice.titles.push(String(title || "Unknown track").slice(0, 100));
+    clearTimeout(notice.timer);
+    notice.timer = setTimeout(() => {
+        trackErrorNotices.delete(guildId);
+        const shownTitles = notice.titles.slice(0, 5);
+        const moreCount = notice.titles.length - shownTitles.length;
+        const titleList = shownTitles
+            .map((trackTitle) => `• ${trackTitle}`)
+            .join("\n");
+        const moreText = moreCount > 0 ? `\n• and ${moreCount} more` : "";
+        channel.send(
+            `⚠️ ${notice.titles.length} track(s) failed to play and were skipped.\n${titleList}${moreText}\nCheck Lavalink logs for the playback error details.`
+        ).catch((error) => {
+            console.error("[euphire] Failed to send track error summary:", error.message);
+        });
+    }, 5000);
+    notice.timer.unref?.();
+}
 
 /**
  * Helper: edit the existing player message or send a new one (never duplicates)
@@ -38,8 +66,8 @@ async function sendQueueEmptyNotice(channel, guildId, voiceChannelId, client) {
     }
     
     const embed = new EmbedBuilder()
-        .setColor(config.accentColor || 0x2b2d31)
-        .setTitle("There are no more tracks");
+        .setColor(0xED4245)
+        .setDescription("There are no more tracks");
 
     try {
         await channel.send({ embeds: [embed] });
@@ -155,8 +183,8 @@ function requesterMention(track) {
 }
 
 function buildNowPlayingEmbedPayload(track, files) {
-    const title = (track?.info?.title || "Unknown").substring(0, 256);
-    const author = track?.info?.author || "Unknown Artist";
+    const { title: displayTitle, author } = getTrackDisplayParts(track);
+    const title = displayTitle.substring(0, 256);
     const embed = new EmbedBuilder()
         .setColor(config.accentColor || 0x2b2d31)
         .setTitle(`Now Playing — ${title}`)
@@ -186,8 +214,7 @@ async function sendNowPlayingPayload(channel, container, files, track) {
     }
 
     try {
-        const title = track?.info?.title || "Unknown";
-        const author = track?.info?.author || "Unknown Artist";
+        const { title, author } = getTrackDisplayParts(track);
         return await channel.send({
             content: `**Now Playing — ${title}**\nBy ${author}\nRequested by ${requesterMention(track)}`,
             files: files?.length ? files : undefined,
@@ -643,14 +670,23 @@ function setupPlayerHandler(client) {
                 console.error("[Last.fm] Failed to scrobble on track end:", err.message);
             }
 
-            // End statistics tracking session (natural completion)
+            // Only completed tracks should count as natural completions.
             try {
                 const sessionIdToEnd = player.currentSessionId || guildData.currentSessionId;
                 if (sessionIdToEnd) {
-                    console.log(`[euphire] [${client.botId}] trackEnd: ending session (natural completion), sessionId:`, sessionIdToEnd);
-                    await endSession(sessionIdToEnd, true);
                     player.currentSessionId = null;
                     guildData.currentSessionId = null;
+                    const completedNaturally =
+                        String(payload?.reason || "").toLowerCase() === "finished";
+                    console.log(
+                        `[euphire] [${client.botId}] trackEnd: ending session (${completedNaturally ? "natural completion" : payload?.reason || "early end"}), sessionId:`,
+                        sessionIdToEnd
+                    );
+                    await endSession(
+                        sessionIdToEnd,
+                        completedNaturally,
+                        completedNaturally ? null : player.position
+                    );
                     await saveGuildData(player.guildId, guildData);
                 }
             } catch (err) {
@@ -891,24 +927,34 @@ function setupPlayerHandler(client) {
 
     // --- Track Error / Stuck ---
     client.riffy.on("trackError", async (player, track, payload) => {
-        console.error(`[euphire] Track error in ${player.guildId} for "${track.info.title}":`, payload.error || payload);
+        console.error(
+            `[euphire] Track error in ${player.guildId} for "${track?.info?.title || "Unknown track"}":`,
+            payload?.exception || payload?.error || payload
+        );
         stopPlayerTracking(player);
         const guildData = getGuildData(player.guildId);
         
         // End statistics session (error - not natural completion)
-        try {
-            if (guildData.currentSessionId) {
+        const sessionIdToEnd = player.currentSessionId || guildData.currentSessionId;
+        player.currentSessionId = null;
+        guildData.currentSessionId = null;
+        if (sessionIdToEnd) {
+            try {
                 console.log("[euphire] trackError: ending session (error)");
-                await endSession(guildData.currentSessionId, false);
-                guildData.currentSessionId = null;
+                await endSession(sessionIdToEnd, false, player.position);
+                await saveGuildData(player.guildId, guildData);
+            } catch (err) {
+                console.error("[euphire] Failed to end stats session on track error:", err.message);
             }
-        } catch (err) {
-            console.error("[euphire] Failed to end stats session on track error:", err.message);
         }
         
         const assignedChannel = resolveAssignedChannel(client, player, guildData);
         if (assignedChannel) {
-            assignedChannel.send(`❌ Failed to play **${track.info.title}** (Lavalink Error). Skipping...`).catch(() => {});
+            queueTrackErrorNotice(
+                assignedChannel,
+                player.guildId,
+                track?.info?.title
+            );
         }
     });
 

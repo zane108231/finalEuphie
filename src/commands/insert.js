@@ -1,7 +1,8 @@
 const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js");
-const { isDuplicateTrack, getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
+const { getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
 const { createNoBotInVoiceEmbed } = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
+const { getTrackDisplayName, setTrackDisplayMetadata } = require("../utils/search");
 
 const SPOTIFY_ICON_URL = "https://cdn.discordapp.com/emojis/1561285569068273674.png";
 
@@ -107,16 +108,7 @@ module.exports = {
                     return interaction.editReply({ content: "❌ No results found." });
                 }
 
-                // Check if track is already in queue or currently playing
-                if (isDuplicateTrack(player, track)) {
-                    const dupEmbed = new EmbedBuilder()
-                        .setColor(0xED4245)
-                        .setDescription(`⚠️ **Duplicate Detected**: [${track.info.title} by ${track.info.author}](${track.info.uri || "https://open.spotify.com"}) is already in queue or playing.`);
-                    return await interaction.editReply({
-                        embeds: [dupEmbed],
-                    });
-                }
-
+                setTrackDisplayMetadata(track, query);
                 track.info.requester = interaction.user;
 
                 // Insert at position 1 (right after currently playing track)
@@ -130,7 +122,7 @@ module.exports = {
                 const eta = formatDurationLeadingZero(etaMs);
                 const trackLength = formatDurationLeadingZero(track.info.length || 0);
                 const trackUri = track.info.uri || "https://open.spotify.com";
-                const trackValue = `[${track.info.title} by ${track.info.author}](${trackUri})`;
+                const trackValue = `[${getTrackDisplayName(track)}](${trackUri})`;
                 const thumbnail = track.info.thumbnail || track.info.artworkUrl || null;
 
                 // Build Added Track Embed strictly matching Image #1

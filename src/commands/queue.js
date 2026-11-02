@@ -10,6 +10,7 @@ const {
 } = require("discord.js");
 const { createNoBotInVoiceEmbed } = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
+const { getTrackDisplayParts } = require("../utils/search");
 const config = require("../../config");
 
 // Store active queue sessions: sessionId -> { guildId, voiceChannelId, userId, currentPage, createdAt }
@@ -72,7 +73,7 @@ function findPlayer(guildId, voiceChannelId) {
  */
 function getAllTracks(player) {
     const tracks = [];
-    if (player?.current) {
+    if (player?.current && (player.playing || player.paused)) {
         tracks.push(player.current);
     }
     if (player?.queue && player.queue.length > 0) {
@@ -102,11 +103,9 @@ function buildQueuePayload(allTracks, page = 1, sessionId) {
     pageTracks.forEach((track, idx) => {
         const queueNumber = startIndex + idx + 1;
         const duration = formatDurationLeadingZero(track.info?.length);
-        const title = track.info?.title || "Unknown Title";
-        const author = track.info?.author || "Unknown Artist";
+        const { title, author } = getTrackDisplayParts(track);
         const uri = track.info?.uri || "https://open.spotify.com";
 
-        // Strictly follows Image 1: 1. `[03:59]` [Heat Waves by Glass Animals](uri)
         description += `${queueNumber}. \`[${duration}]\` [${title} by ${author}](${uri})\n`;
 
         const option = new StringSelectMenuOptionBuilder()
@@ -163,7 +162,10 @@ function buildQueuePayload(allTracks, page = 1, sessionId) {
 
     return {
         embeds: [embed],
-        components: [selectRow, paginationRow],
+        components:
+            totalPages > 1
+                ? [selectRow, paginationRow]
+                : [selectRow],
     };
 }
 
@@ -174,8 +176,7 @@ function buildTrackInfoPayload(client, player, allTracks, trackIndex) {
     const track = allTracks[trackIndex];
     if (!track) return null;
 
-    const title = track.info?.title || "Unknown Title";
-    const author = track.info?.author || "Unknown Artist";
+    const { title, author } = getTrackDisplayParts(track);
     const uri = track.info?.uri || "https://open.spotify.com";
     const artwork = track.info?.artworkUrl || track.info?.thumbnail || null;
     const lengthStr = formatDurationLeadingZero(track.info?.length);
@@ -183,7 +184,7 @@ function buildTrackInfoPayload(client, player, allTracks, trackIndex) {
     // Calculate Estimated time until played
     let estimatedTimeStr = "00:00";
     if (trackIndex === 0) {
-        estimatedTimeStr = "Currently playing";
+        estimatedTimeStr = "Indeterminable";
     } else {
         const currentRemaining = Math.max(0, (player?.current?.info?.length || 0) - (player?.position || 0));
         let queueMsBefore = 0;
@@ -196,7 +197,9 @@ function buildTrackInfoPayload(client, player, allTracks, trackIndex) {
 
     // Position in upcoming
     let positionInUpcoming = "-";
-    if (trackIndex === 1) {
+    if (trackIndex === 0) {
+        positionInUpcoming = "Previous";
+    } else if (trackIndex === 1) {
         positionInUpcoming = "Next";
     } else if (trackIndex > 1) {
         positionInUpcoming = String(trackIndex);

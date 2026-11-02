@@ -1,7 +1,7 @@
 const { MessageFlags } = require("discord.js");
 const { getGuildData } = require("../utils/mongoGuildData");
 const { createChatPlayLoadingContainer } = require("../utils/components");
-const { isDuplicateTrack, startIfIdle, ensurePlayer, getOccupiedVoiceChannel, buildAlreadyInUsePayload } = require("../utils/playback");
+const { startIfIdle, ensurePlayer, getOccupiedVoiceChannel, buildAlreadyInUsePayload } = require("../utils/playback");
 
 async function sendChatPlayFeedback(channel, content, timeoutMs = 5000) {
     try {
@@ -122,27 +122,18 @@ async function handleChatPlayMessage(client, message) {
             loadType === "playlist" ||
             loadType === "PLAYLIST_LOADED"
         ) {
-            const duplicates = [];
             const addedTracks = [];
             
             for (const track of tracks) {
                 track.info.requester = message.author;
-                
-                if (isDuplicateTrack(player, track)) {
-                    duplicates.push(track.info.title || "Unknown");
-                } else {
-                    player.queue.add(track);
-                    addedTracks.push(track.info.title || "Unknown");
-                }
+                player.queue.add(track);
+                addedTracks.push(track.info.title || "Unknown");
             }
             
             // Send feedback for playlist
             try {
                 const playlistName = playlistInfo?.name || "Playlist";
-                let feedbackMsg = `✅ Added **${addedTracks.length}** of **${tracks.length}** tracks from **${playlistName}**!`;
-                if (duplicates.length > 0) {
-                    feedbackMsg += `\n⚠️ Skipped ${duplicates.length} duplicates: ${duplicates.slice(0, 3).join(", ")}${duplicates.length > 3 ? "..." : ""}`;
-                }
+                const feedbackMsg = `✅ Added **${addedTracks.length}** of **${tracks.length}** tracks from **${playlistName}**!`;
                 await sendChatPlayFeedback(message.channel, feedbackMsg);
             } catch (err) {}
             await startIfIdle(player);
@@ -155,16 +146,6 @@ async function handleChatPlayMessage(client, message) {
             const track = tracks[0];
             if (!track) {
                 await sendChatPlayFeedback(message.channel, "❌ No results found for that search.");
-                return true;
-            }
-            
-            if (isDuplicateTrack(player, track)) {
-                try {
-                    const feedback = await message.channel.send({
-                        content: `⚠️ **${track.info.title}** is already in the queue!`
-                    });
-                    setTimeout(() => feedback.delete().catch(() => {}), 3000);
-                } catch (err) {}
                 return true;
             }
             

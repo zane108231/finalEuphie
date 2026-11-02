@@ -3,7 +3,6 @@ const { getDB } = require("../utils/database");
 const { getGuildData } = require("../utils/mongoGuildData");
 const {
     ensurePlayer,
-    isDuplicateTrack,
     startIfIdle,
 } = require("../utils/playback");
 const coordinator = require("../utils/mongoCoordinator");
@@ -93,7 +92,7 @@ module.exports = {
                         requester: interaction.user,
                     });
                     const track = result?.tracks?.[0];
-                    if (!track || isDuplicateTrack(player, track)) continue;
+                    if (!track) continue;
                     track.info.requester = interaction.user;
                     player.queue.add(track);
                     queued += 1;

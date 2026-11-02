@@ -7,6 +7,7 @@ const {
     StringSelectMenuOptionBuilder,
 } = require("discord.js");
 const { requireMusicAction } = require("../utils/permissions");
+const { getTrackDisplayName } = require("../utils/search");
 
 function formatDurationLeadingZero(ms) {
     if (!ms || isNaN(ms)) return "00:00";
@@ -37,7 +38,15 @@ module.exports = {
         const player = await requireMusicAction(interaction, client, "remove");
         if (!player) return;
 
-        if (!player.queue || player.queue.length === 0) {
+        const currentTrack =
+            player.current && (player.playing || player.paused)
+                ? player.current
+                : null;
+        const queueTracks = player.queue || [];
+        const allTracks = currentTrack
+            ? [currentTrack, ...queueTracks]
+            : [...queueTracks];
+        if (allTracks.length === 0) {
             return interaction.reply({
                 content: "❌ There are no tracks in the queue.",
                 flags: MessageFlags.Ephemeral,
@@ -50,38 +59,37 @@ module.exports = {
         const pos = posOption || (rawArg && /^\d+$/.test(rawArg) ? parseInt(rawArg, 10) : null);
 
         if (pos !== null) {
-            if (pos < 1 || pos > player.queue.length) {
+            if (pos < 1 || pos > allTracks.length || (currentTrack && pos === 1)) {
+                const queueDescription = currentTrack
+                    ? "The currently playing song cannot be removed with a queue position. "
+                    : "";
                 return interaction.reply({
-                    content: `❌ Invalid position. Queue has **${player.queue.length}** track(s).`,
+                    content: `❌ Invalid position. ${queueDescription}There are **${queueTracks.length}** upcoming track(s).`,
                     flags: MessageFlags.Ephemeral,
                 });
             }
 
-            const removed = player.queue.splice(pos - 1, 1)[0];
-            const trackTitle = removed?.info?.title || "Unknown Track";
-            const trackArtist = removed?.info?.author || "Unknown Artist";
+            const queueIndex = currentTrack ? pos - 2 : pos - 1;
+            const removed = queueTracks.splice(queueIndex, 1)[0];
             const trackUri = removed?.info?.uri || "https://open.spotify.com";
 
             const removedEmbed = new EmbedBuilder()
                 .setColor(0x00FF00) // Green outline
-                .setDescription(`Removed track [${trackTitle} by ${trackArtist}](${trackUri})`);
+                .setDescription(`Removed track [${getTrackDisplayName(removed)}](${trackUri})`);
 
             return await interaction.reply({ embeds: [removedEmbed] });
         }
 
         // Interactive Selection Mode matching Image #2
         // Show up to 10 tracks on the page
-        const tracksToShow = player.queue.slice(0, 20); // Discord select menus support up to 25 options
-        const totalPages = Math.ceil(player.queue.length / 10) || 1;
-        const pageTracks = player.queue.slice(0, 10);
+        const totalPages = Math.ceil(allTracks.length / 10) || 1;
+        const pageTracks = allTracks.slice(0, 10);
+        const selectableTracks = currentTrack ? pageTracks.slice(1) : pageTracks;
 
-        let lines = [];
-        pageTracks.forEach((track, i) => {
+        const lines = pageTracks.map((track, i) => {
             const duration = formatDurationLeadingZero(track.info?.length || 0);
-            const title = track.info?.title || "Unknown Track";
-            const author = track.info?.author || "Unknown Artist";
             const uri = track.info?.uri || "https://open.spotify.com";
-            lines.push(`${i + 1}. \`[${duration}]\` [${title} by ${author}](${uri})`);
+            return `${i + 1}. \`[${duration}]\` [${getTrackDisplayName(track)}](${uri})`;
         });
 
         const embedDescription = `Page **1/${totalPages}**\n\n${lines.join("\n")}\n\ncancel`;
@@ -96,16 +104,15 @@ module.exports = {
             .setMinValues(1)
             .setMaxValues(1);
 
-        pageTracks.forEach((track, i) => {
+        selectableTracks.forEach((track) => {
+            const queueIndex = queueTracks.indexOf(track);
             const duration = formatDurationLeadingZero(track.info?.length || 0);
-            const title = track.info?.title || "Unknown Track";
-            const author = track.info?.author || "Unknown Artist";
 
             selectMenu.addOptions(
                 new StringSelectMenuOptionBuilder()
-                    .setLabel(`${i + 1}. ${title}`.slice(0, 100))
-                    .setDescription(`by ${author} [${duration}]`.slice(0, 100))
-                    .setValue(String(i))
+                    .setLabel(`${queueIndex + (currentTrack ? 2 : 1)}. ${getTrackDisplayName(track)}`.slice(0, 100))
+                    .setDescription(`[${duration}]`.slice(0, 100))
+                    .setValue(String(queueIndex))
             );
         });
 
@@ -121,15 +128,28 @@ module.exports = {
         // Send the interactive selection menu in the channel
         let message = null;
         if (interaction.channel) {
-            message = await interaction.channel.send({
-                embeds: [queueEmbed],
-                components: [row],
-            });
-            // If interaction needs acknowledgment
-            if (!interaction.replied && !interaction.deferred) {
-                if (interaction.isChatInputCommand?.()) {
-                    await interaction.reply({ content: "Please make a selection above.", flags: MessageFlags.Ephemeral }).catch(() => {});
+            const shouldAcknowledge =
+                interaction.isChatInputCommand?.() &&
+                !interaction.replied &&
+                !interaction.deferred;
+            if (shouldAcknowledge) {
+                await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            }
+            try {
+                message = await interaction.channel.send({
+                    embeds: [queueEmbed],
+                    components: [row],
+                });
+            } catch (error) {
+                if (shouldAcknowledge) {
+                    await interaction.editReply({
+                        content: "❌ Could not send the queue selection menu.",
+                    });
                 }
+                throw error;
+            }
+            if (shouldAcknowledge) {
+                await interaction.deleteReply();
             }
         } else {
             message = await interaction.reply({
@@ -146,6 +166,7 @@ module.exports = {
         const collector = message.createMessageComponentCollector({ filter, time: 60000, max: 1 });
 
         collector.on("collect", async (menuInteraction) => {
+            await menuInteraction.deferUpdate();
             const selectedValue = menuInteraction.values[0];
 
             if (selectedValue === "cancel") {
@@ -154,14 +175,16 @@ module.exports = {
             }
 
             const selectedIndex = parseInt(selectedValue, 10);
-            if (isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= player.queue.length) {
+            if (
+                isNaN(selectedIndex) ||
+                selectedIndex < 0 ||
+                selectedIndex >= queueTracks.length
+            ) {
                 await message.delete().catch(() => {});
                 return;
             }
 
-            const removed = player.queue.splice(selectedIndex, 1)[0];
-            const trackTitle = removed?.info?.title || "Unknown Track";
-            const trackArtist = removed?.info?.author || "Unknown Artist";
+            const removed = queueTracks.splice(selectedIndex, 1)[0];
             const trackUri = removed?.info?.uri || "https://open.spotify.com";
 
             // Delete the queue selection message completely so only the removed track embed remains
@@ -170,7 +193,7 @@ module.exports = {
             // Send green outline left side embed message
             const removedEmbed = new EmbedBuilder()
                 .setColor(0x00FF00) // Green outline
-                .setDescription(`Removed track [${trackTitle} by ${trackArtist}](${trackUri})`);
+                .setDescription(`Removed track [${getTrackDisplayName(removed)}](${trackUri})`);
 
             await menuInteraction.channel.send({ embeds: [removedEmbed] });
         });

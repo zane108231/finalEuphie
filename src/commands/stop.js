@@ -1,9 +1,10 @@
-const { SlashCommandBuilder, MessageFlags, ContainerBuilder, TextDisplayBuilder } = require("discord.js");
+const { SlashCommandBuilder, MessageFlags } = require("discord.js");
 const { getGuildData, saveGuildData, clearUpdateInterval } = require("../utils/mongoGuildData");
 const { requireMusicAction } = require("../utils/permissions");
 const { endSession } = require("../utils/mongoStats");
 const coordinator = require("../utils/mongoCoordinator");
 const { removeSavedSession } = require("../utils/playbackRecovery");
+const { createStopConfirmationEmbed } = require("../utils/stopConfirmation");
 
 module.exports = {
     aliases: ["leave"],
@@ -69,23 +70,15 @@ module.exports = {
         await saveGuildData(interaction.guild.id, guildData);
         player.destroy?.();
 
-        const container = new ContainerBuilder();
-        container.addTextDisplayComponents(
-            new TextDisplayBuilder().setContent(
-                "### ⏹ Stopped\n\n" +
-                "**Status**\n" +
-                "-# Queue cleared, disconnected, and bot released for others to use."
-            )
-        );
+        const embed = createStopConfirmationEmbed();
         if (interaction.replied || interaction.deferred) {
             await interaction.editReply({
-                components: [container],
-                flags: MessageFlags.IsComponentsV2,
+                embeds: [embed],
             });
         } else {
             await interaction.reply({
-                components: [container],
-                flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+                embeds: [embed],
+                flags: MessageFlags.Ephemeral,
             });
         }
     },

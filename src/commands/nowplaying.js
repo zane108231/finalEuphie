@@ -4,6 +4,7 @@ const { formatDuration, getSpotifyEmoji } = require("../utils/components");
 const { isActivelyPlaying } = require("../utils/playback");
 const { createNoBotInVoiceEmbed } = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
+const { getTrackDisplayParts } = require("../utils/search");
 const config = require("../../config");
 
 module.exports = {
@@ -41,8 +42,7 @@ module.exports = {
         }
 
         const track = player.current;
-        const trackTitle = track?.info?.title || "Unknown";
-        const trackArtist = track?.info?.author || "Unknown Artist";
+        const { title: trackTitle, author: trackArtist } = getTrackDisplayParts(track);
         const trackLength = track?.info?.length || 0;
         const currentPosition = player.position || 0;
         const requester = track?.info?.requester;
