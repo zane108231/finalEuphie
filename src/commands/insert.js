@@ -2,6 +2,8 @@ const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js"
 const { getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
 const { createNoBotInVoiceEmbed } = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
+const { searchYoutubeTrack } = require("../utils/search");
+const { getSpotifyPlaylistMetadata } = require("../utils/spotifyPlaylistSearch");
 const {
     getSpotifyTrackDisplayName,
     setTrackDisplayMetadata,
@@ -94,13 +96,168 @@ module.exports = {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         try {
-            const result = await client.riffy.resolve({
+            const result = await targetRiffy.resolve({
                 query: query.trim(),
                 source: "spsearch",
                 requester: interaction.user,
             });
 
-            const { loadType, tracks } = result;
+            const { loadType, tracks, playlistInfo } = result;
+            if (
+                loadType === "playlist" ||
+                loadType === "playlist_loaded" ||
+                loadType === "PLAYLIST_LOADED"
+            ) {
+                const playlistUrl = query.trim();
+                let spotifyPlaylistMetadata = null;
+                if (/^https?:\/\/(?:www\.)?open\.spotify\.com\/.*playlist\//i.test(playlistUrl)) {
+                    try {
+                        spotifyPlaylistMetadata =
+                            await getSpotifyPlaylistMetadata(playlistUrl);
+                    } catch (error) {
+                        console.warn(
+                            `[euphire] Could not fetch Spotify playlist artwork for "${playlistUrl}":`,
+                            error.message
+                        );
+                    }
+                }
+
+                const playableTracks = [];
+                let failedTrackCount = 0;
+                for (const track of tracks || []) {
+                    let playableTrack = track;
+                    if (
+                        String(track?.info?.sourceName || "").toLowerCase() ===
+                        "spotify"
+                    ) {
+                        try {
+                            const youtubeTrack = await searchYoutubeTrack(
+                                targetRiffy,
+                                track,
+                                interaction.user
+                            );
+                            if (!youtubeTrack) {
+                                failedTrackCount += 1;
+                                continue;
+                            }
+                            track.track = youtubeTrack.track;
+                        } catch (error) {
+                            failedTrackCount += 1;
+                            console.warn(
+                                `[euphire] Could not resolve inserted Spotify playlist track "${track.info?.title || "Unknown"}":`,
+                                error.message
+                            );
+                            continue;
+                        }
+                    }
+
+                    playableTrack.info.requester = interaction.user;
+                    const spotifyMetadata = await findSpotifyTrackMetadata(
+                        targetRiffy,
+                        playableTrack,
+                        interaction.user
+                    );
+                    applySpotifyTrackMetadata(playableTrack, spotifyMetadata);
+                    if (!playableTrack.info.spotifyTitle) {
+                        setTrackDisplayMetadata(playableTrack, null);
+                    }
+                    playableTracks.push(playableTrack);
+                }
+
+                if (!playableTracks.length) {
+                    return interaction.editReply({
+                        content: tracks?.length
+                            ? `❌ None of the ${tracks.length} playlist tracks could be matched to playable audio.`
+                            : "❌ This playlist has no tracks.",
+                    });
+                }
+
+                const existingQueue = [...player.queue];
+                const etaMs = Math.max(
+                    0,
+                    (player.current.info?.length || 0) - (player.position || 0)
+                );
+                player.queue.clear();
+                for (const track of playableTracks) {
+                    player.queue.add(track);
+                }
+                for (const track of existingQueue) {
+                    player.queue.add(track);
+                }
+
+                const playlistName =
+                    spotifyPlaylistMetadata?.name ||
+                    playlistInfo?.name ||
+                    "Spotify Playlist";
+                const playlistUrlForCard =
+                    spotifyPlaylistMetadata?.url ||
+                    playlistInfo?.url ||
+                    playlistUrl;
+                const playlistArtwork =
+                    spotifyPlaylistMetadata?.artworkUrl ||
+                    (!spotifyPlaylistMetadata &&
+                    !/^https?:\/\/(?:www\.)?open\.spotify\.com\/.*playlist\//i.test(
+                        playlistUrl
+                    )
+                        ? playlistInfo?.artworkUrl || playlistInfo?.thumbnail
+                        : null);
+                const playlistLength = tracks.reduce(
+                    (total, track) =>
+                        total + (Number(track?.info?.length) || 0),
+                    0
+                );
+                const embed = new EmbedBuilder()
+                    .setColor(0x2b2d31)
+                    .setAuthor({
+                        name: "Added Playlist",
+                        iconURL: client.user?.displayAvatarURL?.(),
+                    })
+                    .addFields(
+                        {
+                            name: "Playlist",
+                            value: `[${playlistName.replace(/[\[\]]/g, "\\$&")}](${playlistUrlForCard})`,
+                            inline: false,
+                        },
+                        {
+                            name: "Playlist Length",
+                            value: formatDurationLeadingZero(playlistLength),
+                            inline: true,
+                        },
+                        {
+                            name: "Tracks",
+                            value: String(playableTracks.length),
+                            inline: true,
+                        },
+                        {
+                            name: "Estimated time until played",
+                            value: formatDurationLeadingZero(etaMs),
+                            inline: false,
+                        },
+                        {
+                            name: "Position in upcoming",
+                            value: "Next",
+                            inline: true,
+                        },
+                        {
+                            name: "Position in queue",
+                            value: "2",
+                            inline: true,
+                        }
+                    )
+                    .setFooter({
+                        text: `Requested by ${interaction.user.tag || interaction.user.username}`,
+                        iconURL: interaction.user.displayAvatarURL(),
+                    });
+                if (playlistArtwork) embed.setThumbnail(playlistArtwork);
+                if (failedTrackCount) {
+                    embed.addFields({
+                        name: "Unavailable tracks",
+                        value: String(failedTrackCount),
+                        inline: true,
+                    });
+                }
+                return sendPublicEmbed(interaction, embed);
+            }
 
             if (
                 loadType === "search" ||

@@ -149,6 +149,23 @@ async function reply(interaction, text) {
     });
 }
 
+function formatTrackPosition(ms) {
+    const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+async function replyTrackPlaybackState(interaction, text) {
+    return interaction.reply({
+        embeds: [
+            new EmbedBuilder()
+                .setColor(0x2ecc40)
+                .setDescription(text),
+        ],
+    });
+}
+
 async function persistQueue(client, player) {
     await require("../utils/playbackRecovery").persistPlayer(client, player);
 }
@@ -165,13 +182,34 @@ function requiredPermission(action) {
     return "update_state";
 }
 
-async function executeTrackState(action, interaction, player, value) {
+async function executeTrackState(action, interaction, client, player, value) {
     const track = player.current;
     if (!track) return reply(interaction, "There is no track currently playing.");
     if (action === "pause" || action === "resume") {
-        const paused = action === "pause";
-        await player.pause(paused);
-        return reply(interaction, paused ? "The current track is paused." : "Playback resumed.");
+        const shouldPause = action === "pause" ? !player.paused : false;
+        if (Boolean(player.paused) === shouldPause) {
+            return replyTrackPlaybackState(
+                interaction,
+                shouldPause
+                    ? `Track has been paused at ${formatTrackPosition(player.position)} ⏸️`
+                    : "Track has been resumed ⏯️"
+            );
+        }
+
+        const pausedPosition = Math.max(0, Number(player.position) || 0);
+        await player.pause(shouldPause);
+        if (shouldPause) {
+            player.pausedAtPosition = pausedPosition;
+        } else {
+            delete player.pausedAtPosition;
+        }
+        await persistQueue(client, player);
+        return replyTrackPlaybackState(
+            interaction,
+            shouldPause
+                ? `Track has been paused at ${formatTrackPosition(pausedPosition)} ⏸️`
+                : "Track has been resumed ⏯️"
+        );
     }
 
     const raw = value.split(/\s+/)[0];
@@ -540,7 +578,7 @@ async function executeFeature(action, interaction, client) {
     const player = await requireMusicAction(interaction, client, requiredPermission(action));
     if (!player) return;
     if (["pause", "resume", "forward", "backward", "end-time", "start-time"].includes(action)) {
-        return executeTrackState(action, interaction, player, value);
+        return executeTrackState(action, interaction, client, player, value);
     }
     return executeQueueAction(action, interaction, client, player, value);
 }

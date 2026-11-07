@@ -9,7 +9,7 @@ const advancedCommands = require("../commands/advanced");
 const prefixFallbackNames = [
     ...advancedCommands.commands.map((command) => command.data.name),
     ...advancedCommands.multiWordAliases.map(([phrase]) => phrase),
-    "resume",
+    "resumesession",
     "resume session",
     "album search",
     "playlist search",

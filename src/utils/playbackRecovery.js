@@ -78,7 +78,14 @@ async function persistPlayer(client, player) {
             null,
         currentTrack: current,
         queue,
-        positionMs: Math.max(0, Number(player.position) || 0),
+        positionMs: Math.max(
+            0,
+            Number(
+                player.paused && Number.isFinite(Number(player.pausedAtPosition))
+                    ? player.pausedAtPosition
+                    : player.position
+            ) || 0
+        ),
         volume: Number.isFinite(Number(player.volume))
             ? Math.max(0, Number(player.volume))
             : 75,

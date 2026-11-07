@@ -18,6 +18,7 @@ const {
     applySpotifyTrackMetadata,
 } = require("../utils/search");
 const config = require("../../config");
+const { getSpotifyPlaylistMetadata } = require("../utils/spotifyPlaylistSearch");
 
 // mm:ss, zero padded (03:07)
 function fmt(ms) {
@@ -168,10 +169,14 @@ function buildAddedPlaylistEmbed(
     const name =
         playlistInfo?.name || playlist?.name || "Unknown Playlist";
     const url = playlist?.url || playlistInfo?.url || "https://open.spotify.com";
+    const isSpotifyPlaylist = /open\.spotify\.com\/playlist\//i.test(url);
     const artwork =
         playlist?.artworkUrl ||
-        playlistInfo?.artworkUrl ||
-        getArtwork(tracks[0]);
+        (!isSpotifyPlaylist
+            ? playlistInfo?.artworkUrl ||
+              playlistInfo?.thumbnail ||
+              getArtwork(tracks[0])
+            : null);
     const escapedName = name.replace(/[\[\]]/g, "\\$&");
     const embed = new EmbedBuilder()
         .setColor(0x2b2d31)
@@ -476,13 +481,43 @@ module.exports = {
                 }
                 await startIfIdle(player);
 
-                const playlistCardData =
-                    interaction.playlistSearchSelection || {
-                        name: playlistInfo?.name || "Unknown Playlist",
-                        url: playlistInfo?.url || "https://open.spotify.com",
-                        artworkUrl: playlistInfo?.artworkUrl || getArtwork(orderedTracks[0]),
-                        trackCount: tracks.length,
-                    };
+                const selectedPlaylist = interaction.playlistSearchSelection;
+                let spotifyPlaylistMetadata = null;
+                if (isSpotifyUrl && !selectedPlaylist?.artworkUrl) {
+                    try {
+                        spotifyPlaylistMetadata =
+                            await getSpotifyPlaylistMetadata(trimmedQuery);
+                    } catch (error) {
+                        console.warn(
+                            `[euphire] Could not fetch Spotify playlist artwork for "${trimmedQuery}":`,
+                            error.message
+                        );
+                    }
+                }
+                const playlistCardData = {
+                    name:
+                        selectedPlaylist?.name ||
+                        spotifyPlaylistMetadata?.name ||
+                        playlistInfo?.name ||
+                        "Unknown Playlist",
+                    url:
+                        selectedPlaylist?.url ||
+                        spotifyPlaylistMetadata?.url ||
+                        playlistInfo?.url ||
+                        (isSpotifyUrl ? trimmedQuery : "https://open.spotify.com"),
+                    artworkUrl:
+                        selectedPlaylist?.artworkUrl ||
+                        spotifyPlaylistMetadata?.artworkUrl ||
+                        (!isSpotifyUrl
+                            ? playlistInfo?.artworkUrl ||
+                              playlistInfo?.thumbnail ||
+                              getArtwork(orderedTracks[0])
+                            : null),
+                    trackCount:
+                        selectedPlaylist?.trackCount ||
+                        spotifyPlaylistMetadata?.trackCount ||
+                        tracks.length,
+                };
                 const initialEmbed = buildAddedPlaylistEmbed(
                     client,
                     playlistCardData,

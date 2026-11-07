@@ -2,7 +2,7 @@ const { SlashCommandBuilder, MessageFlags } = require("discord.js");
 const { resumeGuildSession } = require("../utils/playbackRecovery");
 
 module.exports = {
-    aliases: ["resume"],
+    aliases: ["resumesession"],
     data: new SlashCommandBuilder()
         .setName("resume-session")
         .setDescription("Resume your saved music session"),
