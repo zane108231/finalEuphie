@@ -12,7 +12,10 @@ const {
     StringSelectMenuOptionBuilder,
 } = require("discord.js");
 const { ButtonStyle } = require("discord.js");
-const { getTrackDisplayName, getSpotifyTrackUrl } = require("./search");
+const {
+    getSpotifyTrackDisplayName,
+    getSpotifyTrackUrl,
+} = require("./search");
 
 /**
  * Format milliseconds to mm:ss
@@ -96,7 +99,7 @@ function createNowPlayingContainer(track, player, guildData, musicardBuffer, cli
 
     const hasAuthor = Boolean(track?.info?.displayAuthor || track?.info?.author);
     const displayName = hasAuthor
-        ? getTrackDisplayName(track)
+        ? getSpotifyTrackDisplayName(track)
         : track?.info?.displayTitle || track?.info?.title || "Unknown";
 
     const activeClient = client || player?.node?.riffy?.client || player?.client || null;

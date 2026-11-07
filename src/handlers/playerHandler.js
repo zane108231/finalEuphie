@@ -12,7 +12,11 @@ const { resetSessionPermissions } = require("../utils/permissions");
 const { startSession, updateSessionProgress, endSession, addSessionParticipant, removeSessionParticipant } = require("../utils/mongoStats");
 const { startPlayerTracking, stopPlayerTracking } = require("../utils/modelMilestones");
 const { updateNowPlaying, scrobble } = require("../utils/lastfm");
-const { getTrackDisplayParts } = require("../utils/search");
+const {
+    getTrackDisplayParts,
+    findSpotifyTrackMetadata,
+    applySpotifyTrackMetadata,
+} = require("../utils/search");
 const coordinator = require("../utils/mongoCoordinator");
 const config = require("../../config");
 
@@ -249,6 +253,14 @@ async function announceNowPlaying(client, player, track, guildData) {
             currentTrack.info?.identifier === track?.info?.identifier)
             ? currentTrack
             : track;
+    if (announcementTrack !== track && track?.info?.spotifyTitle) {
+        applySpotifyTrackMetadata(announcementTrack, {
+            url: track.info.spotifyUrl,
+            artworkUrl: track.info.spotifyArtworkUrl,
+            title: track.info.spotifyTitle,
+            artist: track.info.spotifyArtist,
+        });
+    }
     const container = createNowPlayingContainer(
         announcementTrack,
         player,
@@ -588,6 +600,18 @@ function setupPlayerHandler(client) {
 
             // Start voice channel monitoring
             startVoiceChannelMonitoring(client, player.guildId);
+
+            if (!track?.info?.spotifyTitle) {
+                const requester =
+                    track?.info?.requester ||
+                    (player.requesterId ? { id: player.requesterId } : null);
+                const spotifyMetadata = await findSpotifyTrackMetadata(
+                    client.riffy,
+                    track,
+                    requester
+                );
+                applySpotifyTrackMetadata(track, spotifyMetadata);
+            }
 
             await announceNowPlaying(client, player, track, guildData);
 

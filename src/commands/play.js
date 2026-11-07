@@ -12,9 +12,10 @@ const coordinator = require("../utils/mongoCoordinator");
 const { getPrefix } = require("../utils/prefixStore");
 const {
     searchYoutubeTrack,
-    getTrackDisplayName,
+    getSpotifyTrackDisplayName,
     setTrackDisplayMetadata,
     findSpotifyTrackMetadata,
+    applySpotifyTrackMetadata,
 } = require("../utils/search");
 const config = require("../../config");
 
@@ -610,8 +611,7 @@ module.exports = {
                         track,
                         interaction.user
                     );
-                    track.info.spotifyUrl = spotifyMetadata.url;
-                    track.info.spotifyArtworkUrl = spotifyMetadata.artworkUrl;
+                    applySpotifyTrackMetadata(track, spotifyMetadata);
                 }
 
                 track.info.requester = interaction.user;
@@ -633,7 +633,7 @@ module.exports = {
 
                     const upcomingPos = queueLength === 1 ? "Next" : String(queueLength);
                     const queuePos = String(queueLength + 1); // +1 for the currently playing track
-                    const displayName = getTrackDisplayName(track);
+                    const displayName = getSpotifyTrackDisplayName(track);
 
                     const embed = buildAddedTrackEmbed(client, interaction.user, {
                         trackValue: track.info.spotifyUrl

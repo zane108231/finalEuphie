@@ -3,9 +3,10 @@ const { getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playbac
 const { createNoBotInVoiceEmbed } = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
 const {
-    getTrackDisplayName,
+    getSpotifyTrackDisplayName,
     setTrackDisplayMetadata,
     findSpotifyTrackMetadata,
+    applySpotifyTrackMetadata,
 } = require("../utils/search");
 
 const SPOTIFY_ICON_URL = "https://cdn.discordapp.com/emojis/1561285569068273674.png";
@@ -118,8 +119,7 @@ module.exports = {
                     track,
                     interaction.user
                 );
-                track.info.spotifyUrl = spotifyMetadata.url;
-                track.info.spotifyArtworkUrl = spotifyMetadata.artworkUrl;
+                applySpotifyTrackMetadata(track, spotifyMetadata);
                 track.info.requester = interaction.user;
 
                 // Insert at position 1 (right after currently playing track)
@@ -132,7 +132,7 @@ module.exports = {
                 const etaMs = Math.max(0, (player.current.info?.length || 0) - (player.position || 0));
                 const eta = formatDurationLeadingZero(etaMs);
                 const trackLength = formatDurationLeadingZero(track.info.length || 0);
-                const displayName = getTrackDisplayName(track);
+                const displayName = getSpotifyTrackDisplayName(track);
                 const trackValue = track.info.spotifyUrl
                     ? `[${displayName}](${track.info.spotifyUrl})`
                     : displayName;

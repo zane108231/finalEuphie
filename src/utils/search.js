@@ -108,10 +108,14 @@ function buildIdentifiers(query, source) {
 
     const primary = source || "spsearch";
     if (primary === "ytsearch") {
-        const plainQuery = trimmed.replace(/\s+(?:lyrics?|lyric\s+video)$/i, "").trim();
+        const searchTerms = trimmed.replace(
+            /\s*(?:\(\s*lyrics?\s*\)|lyrics?|lyric\s+video)$/i,
+            ""
+        ).trim();
+        const baseQuery = searchTerms || trimmed;
         const queries = [
-            /\blyrics?\b/i.test(trimmed) ? trimmed : `${trimmed} lyrics`,
-            plainQuery,
+            `${baseQuery} Lyrics`,
+            `${baseQuery} (Lyrics)`,
         ].filter((value, index, values) => value && values.indexOf(value) === index);
         return queries.flatMap((searchQuery) =>
             ["ytsearch", "ytmsearch"].map(
@@ -183,7 +187,6 @@ async function resolveTracks(riffy, { query, source, requester, node } = {}) {
 
     let lastResponse = null;
     let rejectedSearchResults = false;
-    let fallbackSearchResult = null;
 
     for (const identifier of identifiers) {
         try {
@@ -213,9 +216,7 @@ async function resolveTracks(riffy, { query, source, requester, node } = {}) {
                         );
                         return result;
                     }
-                    if (!fallbackSearchResult) {
-                        fallbackSearchResult = result;
-                    }
+                    rejectedSearchResults = true;
                     continue;
                 }
                 riffy.emit(
@@ -227,14 +228,6 @@ async function resolveTracks(riffy, { query, source, requester, node } = {}) {
         } catch (err) {
             console.warn(`[euphire] Search identifier failed (${identifier}):`, err.message);
         }
-    }
-
-    if (fallbackSearchResult) {
-        riffy.emit(
-            "debug",
-            `[euphire] No lyric result found for "${query}"; using the best matching non-lyric result`
-        );
-        return fallbackSearchResult;
     }
 
     if (
@@ -338,6 +331,24 @@ function getTrackDisplayName(track) {
     return author === "Unknown artist" ? title : `${title} by ${author}`;
 }
 
+function getSpotifyTrackDisplayName(track) {
+    const info = track?.info || {};
+    const sourceName = String(info.sourceName || "").toLowerCase();
+    const title =
+        info.spotifyTitle ||
+        (sourceName === "spotify" ? info.title : null);
+    const artist =
+        info.spotifyArtist ||
+        (sourceName === "spotify" ? info.author : null);
+
+    if (!title) return getTrackDisplayName(track);
+    const displayTitle = cleanDisplayTitle(title);
+    const displayArtist = cleanDisplayArtist(artist);
+    return displayArtist && displayArtist !== "Unknown artist"
+        ? `${displayTitle} by ${displayArtist}`
+        : displayTitle;
+}
+
 function getTrackDisplayParts(track) {
     const sourceName = String(track?.info?.sourceName || "").toLowerCase();
     if (sourceName === "youtube" || sourceName === "youtube music") {
@@ -412,21 +423,30 @@ function getSpotifyArtwork(track) {
 
 async function findSpotifyTrackMetadata(riffy, track, requester) {
     const existingUrl = getSpotifyTrackUrl(track);
-    if (existingUrl) {
+    const sourceName = String(track?.info?.sourceName || "").toLowerCase();
+    const existingTitle = track?.info?.spotifyTitle ||
+        (sourceName === "spotify" ? track?.info?.title : null);
+    const existingArtist = track?.info?.spotifyArtist ||
+        (sourceName === "spotify" ? track?.info?.author : null);
+    if (existingUrl && (existingTitle || sourceName === "spotify")) {
         return {
             url: existingUrl,
             artworkUrl:
                 track?.info?.spotifyArtworkUrl ||
-                (String(track?.info?.sourceName || "").toLowerCase() ===
-                "spotify"
-                    ? getSpotifyArtwork(track)
-                    : null),
+                (sourceName === "spotify" ? getSpotifyArtwork(track) : null),
+            title: existingTitle,
+            artist: existingArtist,
         };
     }
 
     const { title, author } = getTrackDisplayParts(track);
     if (!title || title === "Unknown track" || author === "Unknown artist") {
-        return { url: null, artworkUrl: null };
+        return {
+            url: existingUrl,
+            artworkUrl: track?.info?.spotifyArtworkUrl || null,
+            title: existingTitle,
+            artist: existingArtist,
+        };
     }
 
     try {
@@ -443,16 +463,36 @@ async function findSpotifyTrackMetadata(riffy, track, requester) {
                 getSpotifyTrackUrl(candidate)
         );
         return {
-            url: getSpotifyTrackUrl(spotifyTrack),
-            artworkUrl: getSpotifyArtwork(spotifyTrack),
+            url: getSpotifyTrackUrl(spotifyTrack) || existingUrl,
+            artworkUrl: getSpotifyArtwork(spotifyTrack) ||
+                track?.info?.spotifyArtworkUrl ||
+                null,
+            title: spotifyTrack?.info?.title || null,
+            artist: spotifyTrack?.info?.author || null,
         };
     } catch (error) {
         console.warn(
             `[euphire] Could not resolve Spotify link for "${title} by ${author}":`,
             error.message
         );
-        return { url: null, artworkUrl: null };
+        return {
+            url: existingUrl,
+            artworkUrl: track?.info?.spotifyArtworkUrl || null,
+            title: existingTitle,
+            artist: existingArtist,
+        };
     }
+}
+
+function applySpotifyTrackMetadata(track, metadata) {
+    if (!track?.info || !metadata) return track;
+    if (metadata.url) track.info.spotifyUrl = metadata.url;
+    if (metadata.artworkUrl) {
+        track.info.spotifyArtworkUrl = metadata.artworkUrl;
+    }
+    if (metadata.title) track.info.spotifyTitle = metadata.title;
+    if (metadata.artist) track.info.spotifyArtist = metadata.artist;
+    return track;
 }
 
 async function findSpotifyTrackUrl(riffy, track, requester) {
@@ -558,9 +598,11 @@ module.exports = {
     buildIdentifiers,
     rankSearchTracks,
     getTrackDisplayName,
+    getSpotifyTrackDisplayName,
     getTrackDisplayParts,
     getSpotifyTrackUrl,
     findSpotifyTrackUrl,
     findSpotifyTrackMetadata,
+    applySpotifyTrackMetadata,
     setTrackDisplayMetadata,
 };
