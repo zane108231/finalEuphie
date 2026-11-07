@@ -136,15 +136,54 @@ function rankSearchTracks(tracks, query) {
         .split(" ")
         .filter((word) => !["by", "lyrics", "lyric", "video", "official", "audio"].includes(word));
     if (!queryWords.length) return tracks;
+    const numericOnlyQuery =
+        queryWords.length === 1 && /^\d+$/.test(queryWords[0]);
 
     return tracks
         .map((track, index) => {
             const title = normalizeSearchText(track.info?.title || "");
             const author = normalizeSearchText(track.info?.author || "");
+            const parsedTitle = normalizeSearchText(
+                parseVideoDisplayMetadata(track.info?.title || "", query).title
+            );
             const candidateWords = new Set(`${title} ${author}`.split(" "));
             const titleWords = new Set(title.split(" "));
-            const matchedWords = queryWords.filter((word) => candidateWords.has(word));
-            const titleMatches = queryWords.filter((word) => titleWords.has(word));
+            const joinedTitleWords = title.split(" ");
+            const joinedAuthorWords = author.split(" ");
+            const hasJoinedPhrase = (words, queryWord) =>
+                words.some((_, start) => {
+                    let phrase = "";
+                    for (let end = start; end < words.length; end++) {
+                        phrase += words[end];
+                        if (phrase === queryWord) return true;
+                        if (phrase.length >= queryWord.length) break;
+                    }
+                    return false;
+                });
+            const joinedTitleMatch =
+                queryWords.length === 1 &&
+                hasJoinedPhrase(joinedTitleWords, queryWords[0]);
+            const joinedAuthorMatch =
+                queryWords.length === 1 &&
+                hasJoinedPhrase(joinedAuthorWords, queryWords[0]);
+            const matchedWords = queryWords.filter(
+                (word) => candidateWords.has(word)
+            );
+            const titleMatches = queryWords.filter(
+                (word) => titleWords.has(word)
+            );
+            if (
+                (joinedTitleMatch || joinedAuthorMatch) &&
+                !matchedWords.includes(queryWords[0])
+            ) {
+                matchedWords.push(queryWords[0]);
+            }
+            if (
+                joinedTitleMatch &&
+                !titleMatches.includes(queryWords[0])
+            ) {
+                titleMatches.push(queryWords[0]);
+            }
             const minimumMatches = Math.max(1, Math.ceil(queryWords.length * 0.6));
             const isLyrics = /\b(lyrics?|with lyrics)\b/.test(title);
             const officialAudioPenalty = /\bofficial audio\b/.test(title) ? 4 : 0;
@@ -157,7 +196,9 @@ function rankSearchTracks(tracks, query) {
                     matchedWords.length * 4 +
                     titleMatches.length * 2 +
                     -officialAudioPenalty,
-                relevant: matchedWords.length >= minimumMatches,
+                relevant: numericOnlyQuery
+                    ? parsedTitle === queryWords[0]
+                    : matchedWords.length >= minimumMatches,
             };
         })
         .filter((candidate) => candidate.relevant)
@@ -187,6 +228,7 @@ async function resolveTracks(riffy, { query, source, requester, node } = {}) {
 
     let lastResponse = null;
     let rejectedSearchResults = false;
+    let bestRelevantFallback = null;
 
     for (const identifier of identifiers) {
         try {
@@ -216,6 +258,9 @@ async function resolveTracks(riffy, { query, source, requester, node } = {}) {
                         );
                         return result;
                     }
+                    if (!bestRelevantFallback) {
+                        bestRelevantFallback = result;
+                    }
                     rejectedSearchResults = true;
                     continue;
                 }
@@ -234,6 +279,7 @@ async function resolveTracks(riffy, { query, source, requester, node } = {}) {
         rejectedSearchResults &&
         /^(ytsearch|ytmsearch)$/i.test(source || riffy.defaultSearchPlatform)
     ) {
+        if (bestRelevantFallback) return bestRelevantFallback;
         return toResult({ loadType: "empty", data: [] }, requester, requestNode);
     }
 

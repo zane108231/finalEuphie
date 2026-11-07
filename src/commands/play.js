@@ -18,7 +18,10 @@ const {
     applySpotifyTrackMetadata,
 } = require("../utils/search");
 const config = require("../../config");
-const { getSpotifyPlaylistMetadata } = require("../utils/spotifyPlaylistSearch");
+const {
+    findExactSpotifyTrack,
+    getSpotifyPlaylistMetadata,
+} = require("../utils/spotifyPlaylistSearch");
 
 // mm:ss, zero padded (03:07)
 function fmt(ms) {
@@ -164,7 +167,13 @@ function buildAddedPlaylistEmbed(
     playlistInfo,
     tracks,
     length,
-    { trackCount = playlist?.trackCount || tracks.length, eta, upcomingPosition, queuePosition } = {}
+    {
+        trackCount = playlist?.trackCount || tracks.length,
+        unavailableTrackCount = 0,
+        eta,
+        upcomingPosition,
+        queuePosition,
+    } = {}
 ) {
     const name =
         playlistInfo?.name || playlist?.name || "Unknown Playlist";
@@ -219,6 +228,13 @@ function buildAddedPlaylistEmbed(
                 inline: true,
             }
         );
+    }
+    if (unavailableTrackCount > 0) {
+        embed.addFields({
+            name: "Unavailable tracks",
+            value: String(unavailableTrackCount),
+            inline: true,
+        });
     }
     if (artwork && /^https?:\/\//i.test(artwork)) {
         embed.setThumbnail(artwork);
@@ -419,8 +435,23 @@ module.exports = {
             const isSpotifyUrl =
                 /^https?:\/\/(?:www\.)?open\.spotify\.com\//i.test(trimmedQuery);
             const isUrl = /^https?:\/\//i.test(trimmedQuery);
+            let searchQuery = trimmedQuery;
+            if (/^\d+$/.test(trimmedQuery)) {
+                try {
+                    const spotifyTrack =
+                        await findExactSpotifyTrack(trimmedQuery);
+                    if (spotifyTrack) {
+                        searchQuery = `${spotifyTrack.name} ${spotifyTrack.artist} Lyrics`;
+                    }
+                } catch (error) {
+                    console.warn(
+                        `[euphire] Could not use Spotify to disambiguate numeric search "${trimmedQuery}":`,
+                        error.message
+                    );
+                }
+            }
             const result = await client.riffy.resolve({
-                query: trimmedQuery,
+                query: searchQuery,
                 source: isSpotifyUrl ? "spsearch" : "ytsearch",
                 requester: interaction.user,
             });
@@ -566,7 +597,12 @@ module.exports = {
                                     startIndex,
                                     wasIdle
                                 ),
-                                trackCount: addedTracks.length,
+                                trackCount: playlistCardData.trackCount,
+                                unavailableTrackCount: Math.max(
+                                    failedTrackCount,
+                                    playlistCardData.trackCount -
+                                        addedTracks.length
+                                ),
                             }
                         );
                         await updatePublicEmbed(
@@ -591,7 +627,12 @@ module.exports = {
                                     startIndex,
                                     wasIdle
                                 ),
-                                trackCount: addedTracks.length,
+                                trackCount: playlistCardData.trackCount,
+                                unavailableTrackCount: Math.max(
+                                    failedTrackCount,
+                                    playlistCardData.trackCount -
+                                        addedTracks.length
+                                ),
                             }
                         );
                         await updatePublicEmbed(

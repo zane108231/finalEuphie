@@ -84,6 +84,43 @@ async function searchSpotifyPlaylists(query, limit = 50) {
         }));
 }
 
+async function findExactSpotifyTrack(query) {
+    const searchTerm = String(query || "").trim();
+    if (!searchTerm) return null;
+
+    const accessToken = await getSpotifyAccessToken();
+    const params = new URLSearchParams({
+        q: searchTerm,
+        type: "track",
+        limit: "10",
+    });
+    const response = await fetch(`${SPOTIFY_SEARCH_URL}?${params}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(10000),
+    });
+    const searchResponse = await readJsonResponse(response, "track search");
+    const items = searchResponse.tracks?.items;
+    if (!Array.isArray(items)) {
+        throw new Error("Spotify track search response had no track results.");
+    }
+
+    const exactTrack = items.find(
+        (track) =>
+            track?.name?.trim().toLowerCase() === searchTerm.toLowerCase() &&
+            track.is_playable !== false &&
+            track.artists?.some((artist) => artist?.name?.trim())
+    );
+    if (!exactTrack) return null;
+
+    return {
+        name: exactTrack.name.trim(),
+        artist: exactTrack.artists
+            .map((artist) => artist?.name?.trim())
+            .filter(Boolean)
+            .join(" "),
+    };
+}
+
 function getSpotifyPlaylistId(value) {
     try {
         const url = new URL(value);
@@ -200,4 +237,8 @@ async function getSpotifyPlaylistMetadata(playlistUrl) {
     };
 }
 
-module.exports = { searchSpotifyPlaylists, getSpotifyPlaylistMetadata };
+module.exports = {
+    searchSpotifyPlaylists,
+    findExactSpotifyTrack,
+    getSpotifyPlaylistMetadata,
+};

@@ -206,6 +206,15 @@ module.exports = {
                         total + (Number(track?.info?.length) || 0),
                     0
                 );
+                const playlistTrackCount =
+                    spotifyPlaylistMetadata?.trackCount ||
+                    Number(playlistInfo?.trackCount) ||
+                    Number(playlistInfo?.tracks?.total) ||
+                    tracks.length;
+                const unavailableTrackCount = Math.max(
+                    failedTrackCount,
+                    playlistTrackCount - playableTracks.length
+                );
                 const embed = new EmbedBuilder()
                     .setColor(0x2b2d31)
                     .setAuthor({
@@ -225,7 +234,7 @@ module.exports = {
                         },
                         {
                             name: "Tracks",
-                            value: String(playableTracks.length),
+                            value: String(playlistTrackCount),
                             inline: true,
                         },
                         {
@@ -249,10 +258,10 @@ module.exports = {
                         iconURL: interaction.user.displayAvatarURL(),
                     });
                 if (playlistArtwork) embed.setThumbnail(playlistArtwork);
-                if (failedTrackCount) {
+                if (unavailableTrackCount > 0) {
                     embed.addFields({
                         name: "Unavailable tracks",
-                        value: String(failedTrackCount),
+                        value: String(unavailableTrackCount),
                         inline: true,
                     });
                 }

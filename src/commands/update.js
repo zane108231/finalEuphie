@@ -116,7 +116,7 @@ module.exports = {
             .setColor(0xfacc15)
             .setTitle("Update")
             .setDescription(
-                "We will be performing an update in a couple of minutes, Euphie Music will temporarily go offline. Once the bot is back online, it will rejoin its saved voice channel and notify the session owner. Use `e!resume` when you are ready to continue. ETA 10-15 minutes (this estimate is for a full restart, one or more of the bots may be available a lot earlier)\n\n" +
+                "We will be performing an update in a couple of minutes, Euphie Music will temporarily go offline. Once the bot is back online, it will rejoin its saved voice channel and notify the session owner. Use `e!resumesession` when you are ready to continue. ETA 10-15 minutes (this estimate is for a full restart, one or more of the bots may be available a lot earlier)\n\n" +
                     "⭐ Saved sessions will wait for your confirmation before playing.\n\n" +
                     "Sorry for any inconvenience caused and thank you for your patience"
             );
