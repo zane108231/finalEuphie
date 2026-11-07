@@ -9,6 +9,7 @@ const advancedCommands = require("../commands/advanced");
 const prefixFallbackNames = [
     ...advancedCommands.commands.map((command) => command.data.name),
     ...advancedCommands.multiWordAliases.map(([phrase]) => phrase),
+    "resume",
     "resume session",
     "album search",
     "playlist search",
@@ -20,7 +21,7 @@ const prefixFallbackNames = [
     "update",
 ];
 const prefixFallbackPattern = new RegExp(
-    `^e!(?:${prefixFallbackNames
+    `^e!\\s*(?:${prefixFallbackNames
         .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\-/g, "-").replace(/ /g, "\\s+"))
         .sort((a, b) => b.length - a.length)
         .join("|")})(?:\\s|$)`,
@@ -134,7 +135,11 @@ async function handlePrefixCommand(client, message) {
     const prefixes = getAllValidPrefixes(message.guild.id, message.author.id);
     let matchedPrefix = null;
     for (const p of prefixes) {
-        if (message.content.startsWith(p)) {
+        if (
+            p &&
+            message.content.slice(0, p.length).toLowerCase() ===
+                p.toLowerCase()
+        ) {
             matchedPrefix = p;
             break;
         }
@@ -218,20 +223,30 @@ async function handlePrefixCommand(client, message) {
     // console.log(`[euphire] Bot ${botId} will handle command ${command.data.name}`);
 
     const interaction = createPrefixInteraction(message, command, args);
-
-    try {
-        await command.execute(interaction, client);
-    } catch (error) {
-        console.error(`[euphire] Prefix command error (${command.data.name}):`, error);
+    if (!client._pendingCommandExecutions) {
+        client._pendingCommandExecutions = new Set();
+    }
+    const execution = (async () => {
         try {
-            if (interaction.replied || interaction.deferred) {
-                await interaction.followUp({ content: "An error occurred." });
-            } else {
-                await interaction.reply({ content: "An error occurred." });
+            await command.execute(interaction, client);
+        } catch (error) {
+            console.error(`[euphire] Prefix command error (${command.data.name}):`, error);
+            try {
+                if (interaction.replied || interaction.deferred) {
+                    await interaction.followUp({ content: "An error occurred." });
+                } else {
+                    await interaction.reply({ content: "An error occurred." });
+                }
+            } catch {
+                // ignore
             }
-        } catch {
-            // ignore
         }
+    })();
+    client._pendingCommandExecutions.add(execution);
+    try {
+        await execution;
+    } finally {
+        client._pendingCommandExecutions.delete(execution);
     }
 
     return true;

@@ -28,6 +28,10 @@ function markPlayerIdle(player) {
     player.paused = false;
 }
 
+function markIntentionalDisconnect(player) {
+    if (player) player._intentionalDisconnect = true;
+}
+
 function catchRest(promise) {
     if (promise && typeof promise.catch === "function") {
         return promise.catch(() => null);
@@ -220,6 +224,7 @@ function setAnnounceChannel(player, guildData, channelId) {
 
 async function startIfIdle(player) {
     if (!player) return player;
+    if (player._pendingResumeSnapshot) return player;
     clearPlayerIdleTimeout(player);
     if (player.playing || player.paused) return player;
     if (!player.queue.length) return player;
@@ -328,6 +333,7 @@ function setPlayerIdleTimeout(client, player, guildData, reason = "idle") {
         }
 
         // Release bot from coordinator
+        markIntentionalDisconnect(player);
         if (player.voiceChannel) {
             await coordinator.releaseBot(player.voiceChannel);
         }
@@ -357,6 +363,7 @@ module.exports = {
     isDuplicateTrack,
     startIfIdle,
     markPlayerIdle,
+    markIntentionalDisconnect,
     ensurePlayer,
     setAnnounceChannel,
     setVolumeSafe,

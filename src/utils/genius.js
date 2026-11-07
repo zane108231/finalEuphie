@@ -26,6 +26,7 @@ function cleanSongTitle(rawTitle) {
  */
 async function searchGenius(query, customApiKey = null) {
     const apiKey = customApiKey || process.env.GENIUS_API_KEY || process.env.GENIUS_ACCESS_TOKEN || config.geniusApiKey;
+    const failures = [];
 
     if (apiKey) {
         try {
@@ -55,10 +56,10 @@ async function searchGenius(query, customApiKey = null) {
                     return results.slice(0, 10);
                 }
             } else {
-                console.warn(`[Genius] API search failed with status ${res.status}, trying fallback`);
+                failures.push(`official API returned HTTP ${res.status}`);
             }
         } catch (err) {
-            console.warn("[Genius] API search error, trying fallback:", err.message);
+            failures.push(`official API request failed (${err.message})`);
         }
     }
 
@@ -73,7 +74,9 @@ async function searchGenius(query, customApiKey = null) {
 
         if (res.ok) {
             const data = await res.json();
-            const hits = data?.response?.sections?.[0]?.hits || [];
+            const hits = (data?.response?.sections || []).flatMap(
+                (section) => section.hits || []
+            );
             return hits
                 .filter((h) => h.type === "song" && h.result)
                 .map((h) => ({
@@ -85,9 +88,17 @@ async function searchGenius(query, customApiKey = null) {
                     thumbnail: h.result.song_art_image_thumbnail_url || h.result.header_image_thumbnail_url || null,
                 }))
                 .slice(0, 10);
+        } else {
+            failures.push(`unauthenticated search returned HTTP ${res.status}`);
         }
     } catch (err) {
-        console.error("[Genius] Fallback search error:", err.message);
+        failures.push(`unauthenticated search failed (${err.message})`);
+    }
+
+    if (failures.length) {
+        const detail = failures.join("; ");
+        console.error(`[Genius] Search unavailable for "${query}": ${detail}`);
+        throw new Error(detail);
     }
 
     return [];

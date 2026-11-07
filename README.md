@@ -65,6 +65,14 @@ SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
 
 Keep these values private. Add them before starting the bot:
 
+The `e!lyrics` command searches Genius. Add a Genius API access token to `.env` so search continues to work when Genius blocks unauthenticated requests:
+
+```env
+GENIUS_API_KEY=your_genius_access_token
+```
+
+Create a token from [Genius API Clients](https://genius.com/api-clients). Keep it private and restart the bot after adding it.
+
 5. Start the bot:
    ```bash
    npm start

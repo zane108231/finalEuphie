@@ -1,4 +1,3 @@
-
 require("dotenv").config({
     path: require("path").resolve(__dirname, "../.env"),
 });
@@ -14,7 +13,10 @@ const { loadCommands } = require("./handlers/commandHandler");
 const { setupPlayerHandler } = require("./handlers/playerHandler");
 const { patchRiffyResolve } = require("./utils/search");
 const coordinator = require("./utils/mongoCoordinator");
-const { connectToMongoDB } = require("./utils/database");
+const {
+    connectToMongoDB,
+    disconnectFromMongoDB,
+} = require("./utils/database");
 
 // ======================================================
 // HTTP SERVER - NO EXPRESS REQUIRED
@@ -75,6 +77,78 @@ server.listen(PORT, "0.0.0.0", () => {
     console.log(`[euphire] HTTP server listening on port ${PORT}`);
     console.log("[euphire] Health check: /health");
 });
+
+let shuttingDown = false;
+async function waitForPendingPlaybackTasks(clients, timeoutMs = 30000) {
+    const deadline = Date.now() + timeoutMs;
+
+    while (true) {
+        const pending = clients.flatMap((client) => [
+            ...(client._pendingCommandExecutions || []),
+            ...(client._pendingPlaybackTasks || []),
+        ]);
+        if (pending.length === 0) return true;
+
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) return false;
+
+        let timeout;
+        const completed = await Promise.race([
+            Promise.allSettled(pending).then(() => true),
+            new Promise((resolve) => {
+                timeout = setTimeout(() => resolve(false), remainingMs);
+            }),
+        ]);
+        clearTimeout(timeout);
+        if (!completed) return false;
+    }
+}
+
+async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[euphire] ${signal} received; saving playback sessions before shutdown`);
+
+    const clients = coordinator.getAllClients();
+    const tasksCompleted = await waitForPendingPlaybackTasks(clients);
+    if (!tasksCompleted) {
+        console.warn(
+            "[euphire] Playback tasks did not finish within 30 seconds; saving the currently available session state"
+        );
+    }
+
+    let checkpointFailed = false;
+    try {
+        await require("./utils/playbackRecovery").checkpointAllClients(
+            clients
+        );
+        console.log("[euphire] Playback sessions saved successfully");
+    } catch (error) {
+        checkpointFailed = true;
+        console.error("[euphire] Failed to save playback sessions during shutdown:", error);
+    }
+
+    const { markIntentionalDisconnect } = require("./utils/playback");
+    for (const client of clients) {
+        for (const player of client.riffy?.players?.values?.() || []) {
+            markIntentionalDisconnect(player);
+        }
+        client.destroy();
+    }
+    server.close();
+
+    try {
+        await disconnectFromMongoDB();
+    } catch (error) {
+        checkpointFailed = true;
+        console.error("[euphire] Failed to disconnect from MongoDB during shutdown:", error);
+    }
+
+    process.exit(checkpointFailed ? 1 : signal === "SIGINT" ? 130 : 143);
+}
+
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
 
 // ======================================================
 // CREATE DISCORD BOT INSTANCE

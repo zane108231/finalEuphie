@@ -1,8 +1,9 @@
 const { getGuildData, saveGuildData, deleteGuildData } = require("../utils/mongoGuildData");
 const { createChatPlayIdleContainer } = require("../utils/components");
-const { MessageFlags } = require("discord.js");
+const { EmbedBuilder, MessageFlags } = require("discord.js");
 const { addSessionParticipant, removeSessionParticipant } = require("../utils/mongoStats");
 const coordinator = require("../utils/mongoCoordinator");
+const recentDisconnectNotices = new Set();
 
 module.exports = {
     name: "voiceStateUpdate",
@@ -124,6 +125,8 @@ module.exports = {
             }
 
             const player = targetClient.riffy?.players?.get(oldState.guild.id);
+            const wasIntentionalDisconnect =
+                player?._intentionalDisconnect === true;
             if (player) {
                 if (player.idleTimeout) {
                     clearTimeout(player.idleTimeout);
@@ -140,6 +143,61 @@ module.exports = {
 
             // Cleanly release bot from coordinator and mark available
             console.log(`[euphire] Manual VC disconnect detected for bot ${disconnectedBotId} from VC ${oldState.channelId}`);
+            const noticeKey =
+                `${disconnectedBotId}:${oldState.guild.id}:${oldState.channelId}`;
+            if (
+                !wasIntentionalDisconnect &&
+                !recentDisconnectNotices.has(noticeKey)
+            ) {
+                recentDisconnectNotices.add(noticeKey);
+                const noticeCleanup = setTimeout(
+                    () => recentDisconnectNotices.delete(noticeKey),
+                    30000
+                );
+                noticeCleanup.unref?.();
+
+                const textChannelId =
+                    player?.assignedTextChannel ||
+                    player?.textChannel ||
+                    guildData.playerChannelId ||
+                    guildData.chatPlayChannelId;
+                let textChannel = textChannelId
+                    ? targetClient.channels.cache.get(textChannelId)
+                    : null;
+                if (!textChannel && textChannelId) {
+                    try {
+                        textChannel = await targetClient.channels.fetch(
+                            textChannelId
+                        );
+                    } catch (error) {
+                        console.warn(
+                            `[euphire] Could not fetch disconnect notification channel ${textChannelId}:`,
+                            error.message
+                        );
+                    }
+                }
+
+                if (textChannel?.send) {
+                    try {
+                        const embed = new EmbedBuilder()
+                            .setColor(0xed4245)
+                            .setDescription(
+                                "I have been kicked from the voice channel 😟"
+                            );
+                        await textChannel.send({ embeds: [embed] });
+                    } catch (error) {
+                        console.error(
+                            `[euphire] Could not send voice disconnect notification in guild ${oldState.guild.id}:`,
+                            error.message
+                        );
+                    }
+                } else {
+                    console.warn(
+                        `[euphire] No text channel available for voice disconnect notification in guild ${oldState.guild.id}`
+                    );
+                }
+            }
+
             await coordinator.releaseBot(oldState.channelId);
             if (player?.voiceChannel && player.voiceChannel !== oldState.channelId) {
                 await coordinator.releaseBot(player.voiceChannel);

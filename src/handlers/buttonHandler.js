@@ -4,7 +4,11 @@ const { createNowPlayingContainer, createChatPlayNowPlayingContainer, createQueu
 const { generateMusicCard } = require("../utils/musicard");
 const { addNodeDetails } = require("../utils/nodeDetails");
 const { canControlMusic, canUseMusicAction, denyMusicMessage, VOICE_CHANNEL_DENIAL } = require("../utils/permissions");
-const { startIfIdle, setVolumeSafe } = require("../utils/playback");
+const {
+    startIfIdle,
+    setVolumeSafe,
+    markIntentionalDisconnect,
+} = require("../utils/playback");
 const { endSession, startSession, addSessionParticipant } = require("../utils/mongoStats");
 const coordinator = require("../utils/mongoCoordinator");
 const config = require("../../config");
@@ -542,6 +546,7 @@ async function handleButtonInteraction(client, interaction) {
             player.stop();
 
             // Always destroy player to release voice connection
+            markIntentionalDisconnect(player);
             player.destroy();
             return;
         }

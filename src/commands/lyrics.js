@@ -226,8 +226,16 @@ module.exports = {
 
         await interaction.deferReply();
 
-        // Search Genius
-        const songs = await searchGenius(query);
+        let songs;
+        try {
+            songs = await searchGenius(query);
+        } catch (error) {
+            console.error("[Genius] Lyrics search failed:", error.message);
+            return interaction.editReply({
+                content:
+                    "❌ Genius blocked the lyrics search. Add a valid `GENIUS_API_KEY` to your `.env` file and restart the bot, then try again.",
+            });
+        }
 
         if (!songs || songs.length === 0) {
             return interaction.editReply({

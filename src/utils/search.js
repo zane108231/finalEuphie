@@ -358,6 +358,108 @@ function getTrackDisplayParts(track) {
     };
 }
 
+function getSpotifyTrackUrl(track) {
+    const info = track?.info || {};
+    const sourceName = String(info.sourceName || "").toLowerCase();
+    const rawUri = String(info.spotifyUrl || (sourceName === "spotify" ? info.uri || "" : ""));
+
+    if (/^https?:\/\//i.test(rawUri)) {
+        try {
+            const url = new URL(rawUri);
+            if (
+                ["open.spotify.com", "www.open.spotify.com"].includes(url.hostname) &&
+                /^\/(?:intl-[a-z]{2}(?:-[a-z]{2})?\/)?track\/[a-z0-9]+$/i.test(
+                    url.pathname
+                )
+            ) {
+                const trackId = url.pathname.split("/").filter(Boolean).pop();
+                return `https://open.spotify.com/track/${trackId}`;
+            }
+        } catch {
+            return null;
+        }
+    }
+    const spotifyUri = rawUri.match(/^spotify:track:([a-z0-9]+)$/i);
+    if (spotifyUri) {
+        return `https://open.spotify.com/track/${spotifyUri[1]}`;
+    }
+    return null;
+}
+
+function getSpotifyArtwork(track) {
+    const info = track?.info || {};
+    const candidates = [
+        info.artworkUrl,
+        info._cachedThumbnail,
+        track?.pluginInfo?.artworkUrl,
+        track?.pluginInfo?.thumbnail,
+    ];
+    for (const artwork of candidates) {
+        if (typeof artwork === "string" && /^https?:\/\//i.test(artwork)) {
+            return artwork;
+        }
+    }
+
+    try {
+        const thumbnail = info.thumbnail;
+        return typeof thumbnail === "string" && /^https?:\/\//i.test(thumbnail)
+            ? thumbnail
+            : null;
+    } catch (error) {
+        return null;
+    }
+}
+
+async function findSpotifyTrackMetadata(riffy, track, requester) {
+    const existingUrl = getSpotifyTrackUrl(track);
+    if (existingUrl) {
+        return {
+            url: existingUrl,
+            artworkUrl:
+                track?.info?.spotifyArtworkUrl ||
+                (String(track?.info?.sourceName || "").toLowerCase() ===
+                "spotify"
+                    ? getSpotifyArtwork(track)
+                    : null),
+        };
+    }
+
+    const { title, author } = getTrackDisplayParts(track);
+    if (!title || title === "Unknown track" || author === "Unknown artist") {
+        return { url: null, artworkUrl: null };
+    }
+
+    try {
+        const result = await resolveTracks(riffy, {
+            query: `${title} ${author}`,
+            source: "spsearch",
+            requester,
+            node: track?.node,
+        });
+        const rankedTracks = rankSearchTracks(result.tracks, `${title} ${author}`);
+        const spotifyTrack = rankedTracks.find(
+            (candidate) =>
+                String(candidate.info?.sourceName || "").toLowerCase() === "spotify" &&
+                getSpotifyTrackUrl(candidate)
+        );
+        return {
+            url: getSpotifyTrackUrl(spotifyTrack),
+            artworkUrl: getSpotifyArtwork(spotifyTrack),
+        };
+    } catch (error) {
+        console.warn(
+            `[euphire] Could not resolve Spotify link for "${title} by ${author}":`,
+            error.message
+        );
+        return { url: null, artworkUrl: null };
+    }
+}
+
+async function findSpotifyTrackUrl(riffy, track, requester) {
+    const metadata = await findSpotifyTrackMetadata(riffy, track, requester);
+    return metadata.url;
+}
+
 function setTrackDisplayMetadata(track, query) {
     if (!track?.info) return track;
 
@@ -419,6 +521,7 @@ function cleanDisplayTitle(value) {
     return String(value || "Unknown track")
         .replace(/\s*[\[(](?:official\s+)?(?:audio|lyrics?|lyric\s+video|music\s+video|visuali[sz]er)[^\])]*[\])]/gi, "")
         .replace(/\s*[-–—]\s*(?:official\s+)?(?:audio|lyrics?|lyric\s+video|music\s+video|visuali[sz]er)\b.*$/i, "")
+        .replace(/\p{Extended_Pictographic}/gu, "")
         .replace(/\s+/g, " ")
         .trim();
 }
@@ -426,6 +529,7 @@ function cleanDisplayTitle(value) {
 function cleanDisplayArtist(value) {
     return String(value || "Unknown artist")
         .replace(/\s*[-–—]\s*(?:official\s+)?(?:audio|lyrics?|lyric\s+video|music\s+video|visuali[sz]er)\b.*$/i, "")
+        .replace(/\p{Extended_Pictographic}/gu, "")
         .replace(/\s+/g, " ")
         .trim();
 }
@@ -455,5 +559,8 @@ module.exports = {
     rankSearchTracks,
     getTrackDisplayName,
     getTrackDisplayParts,
+    getSpotifyTrackUrl,
+    findSpotifyTrackUrl,
+    findSpotifyTrackMetadata,
     setTrackDisplayMetadata,
 };

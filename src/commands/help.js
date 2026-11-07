@@ -53,7 +53,7 @@ const HELP_PAGES = [
                     { name: "playlistselect", desc: "Select and queue a single track from a playlist by URL", usage: "playlistselect <playlist URL>" },
                     { name: "playingsingle", desc: "Queue a single track from a playlist by URL", usage: "playingsingle <playlist URL> [track number]" },
                     { name: "album search", desc: "Search and queue an album", usage: "album search <album>" },
-                    { name: "resume session", desc: "Resume a previous session", usage: "resume session" },
+                    { name: "resume", desc: "Resume your saved music session after the bot asks you", usage: "resume" },
                     { name: "autoplay toggle", desc: "Toggle autoplay", usage: "autoplay toggle" },
                     { name: "playlistsearch", desc: "Search Spotify playlists, select one, and queue it", usage: "playlistsearch <search term>" },
                 ],

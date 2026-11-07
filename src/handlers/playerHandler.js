@@ -4,7 +4,10 @@ const { getUserData } = require("../utils/mongoUserData");
 const { createNowPlayingContainer, safeArtworkUrl } = require("../utils/components");
 const { recordIncident } = require("../utils/incidents");
 const { scheduleStatusUpdate } = require("../services/statusMonitor");
-const { markPlayerIdle } = require("../utils/playback");
+const {
+    markPlayerIdle,
+    markIntentionalDisconnect,
+} = require("../utils/playback");
 const { resetSessionPermissions } = require("../utils/permissions");
 const { startSession, updateSessionProgress, endSession, addSessionParticipant, removeSessionParticipant } = require("../utils/mongoStats");
 const { startPlayerTracking, stopPlayerTracking } = require("../utils/modelMilestones");
@@ -239,7 +242,20 @@ async function announceNowPlaying(client, player, track, guildData) {
     }
 
     // No musicard generation - removed
-    const container = createNowPlayingContainer(track, player, guildData, null, client);
+    const currentTrack = player.current;
+    const announcementTrack =
+        currentTrack &&
+        (currentTrack.track === track?.track ||
+            currentTrack.info?.identifier === track?.info?.identifier)
+            ? currentTrack
+            : track;
+    const container = createNowPlayingContainer(
+        announcementTrack,
+        player,
+        guildData,
+        null,
+        client
+    );
     const channel = resolveNowPlayingChannel(client, player, guildData);
 
     if (!channel) {
@@ -247,7 +263,12 @@ async function announceNowPlaying(client, player, track, guildData) {
         return;
     }
 
-    const newMsg = await sendNowPlayingPayload(channel, container, [], track);
+    const newMsg = await sendNowPlayingPayload(
+        channel,
+        container,
+        [],
+        announcementTrack
+    );
     if (!newMsg) return;
 
     const oldId = player.playerMessageId || guildData.playerMessageId;
@@ -778,6 +799,7 @@ function setupPlayerHandler(client) {
                     });
                 stopVoiceChannelMonitoring(player.guildId);
                 await coordinator.releaseBot(player.voiceChannel);
+                markIntentionalDisconnect(player);
                 player.destroy();
                 return;
             }

@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, MessageFlags } = require("discord.js");
 const { getGuildData, saveGuildData, clearUpdateInterval } = require("../utils/mongoGuildData");
 const { requireMusicAction } = require("../utils/permissions");
+const { markIntentionalDisconnect } = require("../utils/playback");
 const { endSession } = require("../utils/mongoStats");
 const coordinator = require("../utils/mongoCoordinator");
 const { removeSavedSession } = require("../utils/playbackRecovery");
@@ -69,6 +70,7 @@ module.exports = {
         await removeSavedSession(interaction.guild.id);
         player.queue?.clear?.();
         player.stop?.();
+        markIntentionalDisconnect(player);
         player.destroy?.();
 
         const embed = createStopConfirmationEmbed();

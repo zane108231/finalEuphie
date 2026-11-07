@@ -2,7 +2,11 @@ const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js"
 const { getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
 const { createNoBotInVoiceEmbed } = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
-const { getTrackDisplayName, setTrackDisplayMetadata } = require("../utils/search");
+const {
+    getTrackDisplayName,
+    setTrackDisplayMetadata,
+    findSpotifyTrackMetadata,
+} = require("../utils/search");
 
 const SPOTIFY_ICON_URL = "https://cdn.discordapp.com/emojis/1561285569068273674.png";
 
@@ -109,6 +113,13 @@ module.exports = {
                 }
 
                 setTrackDisplayMetadata(track, query);
+                const spotifyMetadata = await findSpotifyTrackMetadata(
+                    targetRiffy,
+                    track,
+                    interaction.user
+                );
+                track.info.spotifyUrl = spotifyMetadata.url;
+                track.info.spotifyArtworkUrl = spotifyMetadata.artworkUrl;
                 track.info.requester = interaction.user;
 
                 // Insert at position 1 (right after currently playing track)
@@ -121,9 +132,11 @@ module.exports = {
                 const etaMs = Math.max(0, (player.current.info?.length || 0) - (player.position || 0));
                 const eta = formatDurationLeadingZero(etaMs);
                 const trackLength = formatDurationLeadingZero(track.info.length || 0);
-                const trackUri = track.info.uri || "https://open.spotify.com";
-                const trackValue = `[${getTrackDisplayName(track)}](${trackUri})`;
-                const thumbnail = track.info.thumbnail || track.info.artworkUrl || null;
+                const displayName = getTrackDisplayName(track);
+                const trackValue = track.info.spotifyUrl
+                    ? `[${displayName}](${track.info.spotifyUrl})`
+                    : displayName;
+                const thumbnail = track.info.spotifyArtworkUrl || null;
 
                 // Build Added Track Embed strictly matching Image #1
                 const embed = new EmbedBuilder()

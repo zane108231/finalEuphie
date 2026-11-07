@@ -53,6 +53,7 @@ async function saveRecentlyPlayedTrack(track) {
 
 async function persistPlayer(client, player) {
     if (!client || !player?.guildId) return;
+    if (player._pendingResumeSnapshot) return;
 
     const queue = Array.from(player.queue || [])
         .map(serializeTrack)
@@ -183,7 +184,7 @@ function resolveSavedTrack(client, savedTrack) {
         });
 }
 
-async function restoreSnapshot(client, snapshot) {
+async function prepareSnapshot(client, snapshot) {
     if (!client?.isReady?.()) {
         throw new Error("The session's bot is not connected to Discord yet.");
     }
@@ -193,6 +194,9 @@ async function restoreSnapshot(client, snapshot) {
     if (!client.guilds.cache.has(snapshot.guildId)) {
         throw new Error("The saved guild is not available to this bot.");
     }
+
+    const existingPlayer = client.riffy?.players?.get(snapshot.guildId);
+    if (existingPlayer?._pendingResumeSnapshot) return existingPlayer;
 
     await waitForNode(client.riffy);
 
@@ -207,14 +211,24 @@ async function restoreSnapshot(client, snapshot) {
         coordinator.getSessionDJ(snapshot.voiceChannelId) ||
         snapshot.currentTrack?.requesterId ||
         snapshot.queue?.[0]?.requesterId;
+    if (userId && !snapshot.sessionOwnerId) {
+        snapshot.sessionOwnerId = String(userId);
+        await getDB().collection("playbackSessions").updateOne(
+            { guildId: snapshot.guildId },
+            { $set: { sessionOwnerId: String(userId) } }
+        );
+    }
 
-    await coordinator.reserveSpecificBot(
+    const reserved = await coordinator.reserveSpecificBot(
         snapshot.voiceChannelId,
         userId,
         client.botId,
         snapshot.guildId,
         true
     );
+    if (!reserved) {
+        throw new Error("Could not reserve the bot for the saved voice channel.");
+    }
 
     const { ensurePlayer } = require("./playback");
     const player = await ensurePlayer(client, {
@@ -271,25 +285,59 @@ async function restoreSnapshot(client, snapshot) {
         throw new Error("None of the saved tracks are available anymore.");
     }
 
-    await player.play();
-    if (
-        currentTrackRestored &&
-        snapshot.positionMs > 0 &&
-        player.current
-    ) {
-        const trackLength = Number(player.current.info.length);
-        if (trackLength > 0) {
-            player.seek(
-                Math.min(snapshot.positionMs, Math.max(0, trackLength - 1000))
+    player._pendingResumeSnapshot = {
+        ...snapshot,
+        currentTrackRestored,
+    };
+    console.log(
+        `[euphire] Prepared saved session for guild ${snapshot.guildId} (${resolvedTracks.length} track(s)); waiting for the owner to resume`
+    );
+    return player;
+}
+
+async function sendResumePrompt(client, snapshot) {
+    const userId =
+        snapshot.sessionOwnerId ||
+        snapshot.currentTrack?.requesterId ||
+        snapshot.queue?.[0]?.requesterId;
+    if (!userId) {
+        console.warn(
+            `[euphire] Cannot notify the owner of the saved session for guild ${snapshot.guildId}: no owner ID was saved`
+        );
+        return false;
+    }
+
+    const guild = client.guilds.cache.get(snapshot.guildId);
+    if (!guild) return false;
+
+    let channel = snapshot.textChannelId
+        ? guild.channels.cache.get(snapshot.textChannelId)
+        : null;
+    if (!channel && snapshot.textChannelId) {
+        try {
+            channel = await client.channels.fetch(snapshot.textChannelId);
+        } catch (error) {
+            console.warn(
+                `[euphire] Could not fetch the saved session text channel for guild ${snapshot.guildId}:`,
+                error.message
             );
         }
     }
+    if (!channel?.send) channel = guild.systemChannel;
+    if (!channel?.send) {
+        console.warn(
+            `[euphire] Cannot notify the owner of the saved session for guild ${snapshot.guildId}: no sendable text channel is available`
+        );
+        return false;
+    }
 
-    await persistPlayer(client, player);
-    console.log(
-        `[euphire] Restored playback session for guild ${snapshot.guildId} (${resolvedTracks.length} track(s))`
-    );
-    return player;
+    await channel.send({
+        content:
+            `<@${userId}> I’m back in your voice channel with your saved music session ready. ` +
+            "Use `e!resume` when you’re ready to continue.",
+        allowedMentions: { users: [String(userId)] },
+    });
+    return true;
 }
 
 async function restoreClientSessions(client) {
@@ -301,10 +349,19 @@ async function restoreClientSessions(client) {
 
     for (const snapshot of snapshots) {
         try {
-            await restoreSnapshot(client, snapshot);
+            await prepareSnapshot(client, snapshot);
+            if (!client._resumePromptedGuilds) {
+                client._resumePromptedGuilds = new Set();
+            }
+            if (!client._resumePromptedGuilds.has(snapshot.guildId)) {
+                const sent = await sendResumePrompt(client, snapshot);
+                if (sent) {
+                    client._resumePromptedGuilds.add(snapshot.guildId);
+                }
+            }
         } catch (err) {
             console.error(
-                `[euphire] Could not automatically restore guild ${snapshot.guildId}:`,
+                `[euphire] Could not prepare saved session for guild ${snapshot.guildId}:`,
                 err.message
             );
         }
@@ -342,10 +399,44 @@ async function resumeGuildSession(guildId, userId) {
     }
 
     const existingPlayer = client.riffy?.players?.get(guildId);
-    if (existingPlayer?.playing || existingPlayer?.paused) {
+    if (existingPlayer?.playing) {
         return existingPlayer;
     }
-    return restoreSnapshot(client, snapshot);
+    if (existingPlayer?.paused) {
+        await existingPlayer.pause(false);
+        await persistPlayer(client, existingPlayer);
+        return existingPlayer;
+    }
+
+    const player =
+        existingPlayer?._pendingResumeSnapshot
+            ? existingPlayer
+            : await prepareSnapshot(client, snapshot);
+    const pendingSnapshot = player._pendingResumeSnapshot || snapshot;
+    await player.play();
+
+    if (
+        pendingSnapshot.currentTrackRestored !== false &&
+        pendingSnapshot.positionMs > 0 &&
+        player.current
+    ) {
+        const trackLength = Number(player.current.info.length);
+        if (trackLength > 0) {
+            player.seek(
+                Math.min(
+                    pendingSnapshot.positionMs,
+                    Math.max(0, trackLength - 1000)
+                )
+            );
+        }
+    }
+
+    delete player._pendingResumeSnapshot;
+    await persistPlayer(client, player);
+    console.log(
+        `[euphire] Resumed saved session for guild ${guildId} after owner confirmation`
+    );
+    return player;
 }
 
 module.exports = {

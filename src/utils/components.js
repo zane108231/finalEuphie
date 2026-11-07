@@ -12,7 +12,7 @@ const {
     StringSelectMenuOptionBuilder,
 } = require("discord.js");
 const { ButtonStyle } = require("discord.js");
-const { getTrackDisplayName } = require("./search");
+const { getTrackDisplayName, getSpotifyTrackUrl } = require("./search");
 
 /**
  * Format milliseconds to mm:ss
@@ -98,31 +98,10 @@ function createNowPlayingContainer(track, player, guildData, musicardBuffer, cli
     const displayName = hasAuthor
         ? getTrackDisplayName(track)
         : track?.info?.displayTitle || track?.info?.title || "Unknown";
-    const trackUri = track?.info?.uri || "";
-    const trackSource = track?.info?.sourceName || "spotify";
 
     const activeClient = client || player?.node?.riffy?.client || player?.client || null;
     const spotifyEmoji = getSpotifyEmoji(activeClient, player);
-
-    // Create Spotify URL from URI if available
-    let spotifyUrl = "";
-    if (trackUri && trackSource === "spotify") {
-        // Check if it's already a full URL
-        if (trackUri.startsWith("http")) {
-            // Already a URL, just add autoplay parameter if not present
-            if (trackUri.includes("?")) {
-                spotifyUrl = trackUri;
-            } else {
-                spotifyUrl = `${trackUri}?autoplay_ok=1`;
-            }
-        } else if (trackUri.startsWith("spotify:track:")) {
-            // Convert Spotify URI to URL
-            const trackId = trackUri.replace("spotify:track:", "");
-            spotifyUrl = `https://open.spotify.com/track/${trackId}?autoplay_ok=1`;
-        }
-    } else if (trackUri && trackUri.startsWith("http")) {
-        spotifyUrl = trackUri;
-    }
+    const spotifyUrl = getSpotifyTrackUrl(track);
 
     // Format: "<:spotify:emoji> Started playing [Song Title by Artist](Spotify URL)"
     const displayText = displayName;

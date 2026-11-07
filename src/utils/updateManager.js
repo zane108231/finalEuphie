@@ -37,7 +37,11 @@ async function scheduleUpdateRestart(restartAt) {
                 { $set: { status: "restarting", restartingAt: Date.now() } }
             );
 
+            const { markIntentionalDisconnect } = require("./playback");
             for (const client of clients) {
+                for (const player of client.riffy?.players?.values?.() || []) {
+                    markIntentionalDisconnect(player);
+                }
                 client.destroy();
             }
             await disconnectFromMongoDB();

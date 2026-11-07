@@ -1,11 +1,20 @@
-const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js");
+const {
+    SlashCommandBuilder,
+    MessageFlags,
+    EmbedBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+} = require("discord.js");
 const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const { startIfIdle, ensurePlayer, setAnnounceChannel, getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
 const coordinator = require("../utils/mongoCoordinator");
+const { getPrefix } = require("../utils/prefixStore");
 const {
     searchYoutubeTrack,
     getTrackDisplayName,
     setTrackDisplayMetadata,
+    findSpotifyTrackMetadata,
 } = require("../utils/search");
 const config = require("../../config");
 
@@ -262,8 +271,27 @@ module.exports = {
         const query =
             interaction.queryOverride || interaction.options.getString("query");
         if (!query) {
+            const prefix = getPrefix(interaction.guild?.id, interaction.user?.id);
+            const helpEmbed = new EmbedBuilder()
+                .setColor(0x2b2d31)
+                .setAuthor({
+                    name: "Help",
+                    iconURL: client.user.displayAvatarURL(),
+                })
+                .setDescription(
+                    `**Usage:** ${prefix}play <search term | url>\n` +
+                        "**Description:** Queue a track or playlist from a search term or url"
+                );
+            const helpButton = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId("help_open")
+                    .setLabel("Help")
+                    .setStyle(ButtonStyle.Success)
+            );
+
             return interaction.reply({
-                content: "❌ Usage: `!play <song name or URL>`",
+                embeds: [helpEmbed],
+                components: [helpButton],
                 flags: MessageFlags.Ephemeral,
             });
         }
@@ -468,7 +496,7 @@ module.exports = {
                 );
 
                 const remainingTracks = orderedTracks.slice(firstQueuedIndex + 1);
-                void (async () => {
+                const playlistResolution = (async () => {
                     try {
                         await resolveSpotifyTracksAudio(
                             client.riffy,
@@ -542,6 +570,14 @@ module.exports = {
                         });
                     }
                 })();
+                if (!client._pendingPlaybackTasks) {
+                    client._pendingPlaybackTasks = new Set();
+                }
+                client._pendingPlaybackTasks.add(playlistResolution);
+                playlistResolution.then(
+                    () => client._pendingPlaybackTasks.delete(playlistResolution),
+                    () => client._pendingPlaybackTasks.delete(playlistResolution)
+                );
             } else if (
                 loadType === "search" ||
                 loadType === "track" ||
@@ -568,6 +604,15 @@ module.exports = {
                     track,
                     isSpotifyUrl ? null : trimmedQuery
                 );
+                if (!isUrl || isSpotifyUrl) {
+                    const spotifyMetadata = await findSpotifyTrackMetadata(
+                        client.riffy,
+                        track,
+                        interaction.user
+                    );
+                    track.info.spotifyUrl = spotifyMetadata.url;
+                    track.info.spotifyArtworkUrl = spotifyMetadata.artworkUrl;
+                }
 
                 track.info.requester = interaction.user;
                 const shouldStart = !player.playing && !player.paused;
@@ -588,14 +633,19 @@ module.exports = {
 
                     const upcomingPos = queueLength === 1 ? "Next" : String(queueLength);
                     const queuePos = String(queueLength + 1); // +1 for the currently playing track
+                    const displayName = getTrackDisplayName(track);
 
                     const embed = buildAddedTrackEmbed(client, interaction.user, {
-                        trackValue: `[${getTrackDisplayName(track)}](${track.info.uri})`,
+                        trackValue: track.info.spotifyUrl
+                            ? `[${displayName}](${track.info.spotifyUrl})`
+                            : displayName,
                         eta: fmt(eta),
                         length: fmt(track.info.length),
                         upcomingPos,
                         queuePos,
-                        thumbnail: getArtwork(track),
+                        thumbnail:
+                            track.info.spotifyArtworkUrl ||
+                            (isSpotifyUrl ? getArtwork(track) : null),
                     });
 
                     await sendPublicEmbed(interaction, embed);
