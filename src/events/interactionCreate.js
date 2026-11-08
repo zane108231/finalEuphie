@@ -30,6 +30,16 @@ function isMusicCommand(commandName) {
 module.exports = {
     name: "interactionCreate",
     async execute(client, interaction) {
+        if (
+            interaction.isModalSubmit() &&
+            interaction.customId?.startsWith("clearglobalstats:modal:")
+        ) {
+            await require("../commands/clearglobalstats").handleModalSubmit(
+                interaction
+            );
+            return;
+        }
+
         // Handle slash commands
         if (interaction.isChatInputCommand()) {
             const command = client.commands.get(interaction.commandName);
@@ -40,8 +50,22 @@ module.exports = {
             const isMusic = isMusicCommand(interaction.commandName);
             const voiceChannelId = interaction.member?.voice?.channel?.id;
             const guildId = interaction.guildId || interaction.guild?.id;
-            
-            if (!coordinator.shouldHandleCommand(botId, guildId, voiceChannelId, isMusic)) {
+
+            if (
+                command.primaryOnly &&
+                botId !== (coordinator.primaryBotId || "euphie_main")
+            ) {
+                return;
+            }
+            if (
+                !command.primaryOnly &&
+                !coordinator.shouldHandleCommand(
+                    botId,
+                    guildId,
+                    voiceChannelId,
+                    isMusic
+                )
+            ) {
                 // This bot should not respond - let the correct bot handle it
                 return;
             }

@@ -80,6 +80,7 @@ function createDefaultUserData() {
         lastfmTokenTimestamp: null,
         profileBackground: 'default',
         profileColor: null,
+        profileStatsColor: null,
         profileVisibility: 'public', // 'public' | 'private'
         profilePrivacy: {
             servers: true,
@@ -87,8 +88,8 @@ function createDefaultUserData() {
             tracks: true,
         },
         avatarShape: 'circle', // 'circle' | 'square'
-        avatarBorder: null, // hex string, 'none', or null (default)
-        avatarBackground: null, // hex string or null
+        avatarBorder: null, // color name, 'none', or null (default)
+        avatarBackground: null, // color name or null
         serverVisibility: {}, // guildId -> 'public' | 'private'
         createdAt: Date.now(),
         updatedAt: Date.now()

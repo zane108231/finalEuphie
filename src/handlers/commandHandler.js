@@ -207,7 +207,21 @@ async function handlePrefixCommand(client, message) {
     const voiceChannelId = message.member.voice?.channel?.id;
     const guildId = message.guild?.id;
 
-    const shouldHandle = coordinator.shouldHandleCommand(botId, guildId, voiceChannelId, isMusic);
+    if (
+        command?.primaryOnly &&
+        botId !== (coordinator.primaryBotId || "euphie_main")
+    ) {
+        return true;
+    }
+
+    const shouldHandle = command?.primaryOnly
+        ? true
+        : coordinator.shouldHandleCommand(
+              botId,
+              guildId,
+              voiceChannelId,
+              isMusic
+          );
     // console.log(`[euphire] Command routing: bot=${botId}, guild=${guildId}, command=${command?.data?.name || rawName}, voiceChannel=${voiceChannelId}, shouldHandle=${shouldHandle}, isMusic=${isMusic}`);
 
     if (!shouldHandle) {

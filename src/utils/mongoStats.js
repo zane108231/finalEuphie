@@ -77,8 +77,22 @@ async function startSession(guildId, userId, track, client, voiceChannelId = nul
         botId: client?.botId || null,
         voiceChannelId: voiceChannelId || null,
         trackId: track.info.uri || track.info.identifier || "unknown",
-        trackTitle: track.info.title || "Unknown",
-        trackArtist: track.info.author || null,
+        trackTitle:
+            track.info.spotifyTitle ||
+            track.info.displayTitle ||
+            track.info.title ||
+            "Unknown",
+        trackArtist:
+            track.info.spotifyArtist ||
+            track.info.displayAuthor ||
+            track.info.author ||
+            null,
+        trackArtistSource: track.info.spotifyArtist
+            ? "spotify"
+            : track.info.displayAuthor
+              ? "parsed"
+              : "source",
+        trackSourceName: track.info.sourceName || null,
         trackUri: track.info.uri || null,
         startedAt: now,
         lastPositionMs: trackDuration,
@@ -230,6 +244,8 @@ async function endSession(sessionId, completedNaturally = false, actualPositionM
                     $set: { 
                         trackTitle: session.trackTitle || "Unknown Track",
                         trackArtist: session.trackArtist,
+                        trackArtistSource: session.trackArtistSource,
+                        trackSourceName: session.trackSourceName,
                         trackUri: session.trackUri
                     }
                 },
@@ -448,6 +464,169 @@ async function getTopTracks(userId, limit = 3) {
         .toArray();
 }
 
+async function removeProfileTrackWording(userId, wording) {
+    if (!isDBConnected()) {
+        throw new Error("MongoDB is not connected.");
+    }
+
+    const targetUserId = String(userId || "");
+    const normalizedWording = String(wording || "").trim();
+    if (!/^\d{17,20}$/.test(targetUserId)) {
+        throw new Error("A valid Discord user ID is required.");
+    }
+    if (!normalizedWording) {
+        throw new Error("Wording to remove is required.");
+    }
+
+    const escapedWording = normalizedWording.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+    );
+    const wordingPattern = new RegExp(escapedWording, "i");
+    const trackStats = getDB().collection("trackStats");
+    const matchingTracks = await trackStats
+        .find({
+            userId: targetUserId,
+            $or: [
+                { trackTitle: { $regex: wordingPattern } },
+                { trackArtist: { $regex: wordingPattern } },
+            ],
+        })
+        .toArray();
+
+    const updates = [];
+    let modifiedFields = 0;
+    for (const track of matchingTracks) {
+        const changes = {};
+        for (const field of ["trackTitle", "trackArtist"]) {
+            if (typeof track[field] !== "string") continue;
+
+            const cleanedValue = track[field]
+                .replace(new RegExp(escapedWording, "gi"), "")
+                .replace(/\s+/g, " ")
+                .replace(/\(\s*\)|\[\s*\]|\{\s*\}/g, "")
+                .replace(/\s+([,.;:!?])/g, "$1")
+                .replace(/([([{\-–—|:])\s+/g, "$1")
+                .replace(/\s+([)\]}])/g, "$1")
+                .replace(/^[\s\-–—|,:;]+|[\s\-–—|,:;]+$/g, "")
+                .trim();
+            const replacement =
+                field === "trackTitle" ? cleanedValue || "Unknown Track" : cleanedValue;
+
+            if (replacement !== track[field]) {
+                changes[field] = replacement;
+                modifiedFields++;
+            }
+        }
+
+        if (Object.keys(changes).length) {
+            updates.push({
+                updateOne: {
+                    filter: { _id: track._id, userId: targetUserId },
+                    update: { $set: changes },
+                },
+            });
+        }
+    }
+
+    if (!updates.length) {
+        return { modifiedTracks: 0, modifiedFields: 0 };
+    }
+
+    const result = await trackStats.bulkWrite(updates, { ordered: true });
+    return {
+        modifiedTracks: result.modifiedCount,
+        modifiedFields,
+    };
+}
+
+async function resetUserProfileStats(userId) {
+    if (!isDBConnected()) {
+        throw new Error("MongoDB is not connected.");
+    }
+
+    const targetUserId = String(userId || "");
+    if (!/^\d{17,20}$/.test(targetUserId)) {
+        throw new Error("A specific valid Discord user ID is required.");
+    }
+
+    const db = getDB();
+    const userFilter = { userId: targetUserId };
+    const sharedListeningFilter = {
+        $or: [{ userId: targetUserId }, { friendId: targetUserId }],
+    };
+
+    const ownedSessions = await db.collection("activeSessions")
+        .find(userFilter, { projection: { sessionId: 1 } })
+        .toArray();
+    const ownedSessionIds = ownedSessions.map((session) => session.sessionId);
+    const participantFilter = {
+        $or: [
+            { userId: targetUserId },
+            ...(ownedSessionIds.length
+                ? [{ sessionId: { $in: ownedSessionIds } }]
+                : []),
+        ],
+    };
+
+    const [
+        userStats,
+        serverStats,
+        trackStats,
+        sharedListening,
+        activeSessions,
+        sessionParticipants,
+    ] = await Promise.all([
+        db.collection("userStats").deleteMany(userFilter),
+        db.collection("serverStats").deleteMany(userFilter),
+        db.collection("trackStats").deleteMany(userFilter),
+        db.collection("sharedListening").deleteMany(sharedListeningFilter),
+        db.collection("activeSessions").deleteMany(userFilter),
+        db.collection("sessionParticipants").deleteMany(participantFilter),
+    ]);
+
+    return {
+        userStats: userStats.deletedCount,
+        serverStats: serverStats.deletedCount,
+        trackStats: trackStats.deletedCount,
+        sharedListening: sharedListening.deletedCount,
+        activeSessions: activeSessions.deletedCount,
+        sessionParticipants: sessionParticipants.deletedCount,
+    };
+}
+
+async function clearGlobalProfileStats() {
+    if (!isDBConnected()) {
+        throw new Error("MongoDB is not connected.");
+    }
+
+    const db = getDB();
+    const [
+        userStats,
+        serverStats,
+        trackStats,
+        sharedListening,
+        activeSessions,
+        sessionParticipants,
+    ] = await Promise.all([
+        db.collection("userStats").deleteMany({}),
+        db.collection("serverStats").deleteMany({}),
+        db.collection("trackStats").deleteMany({}),
+        db.collection("sharedListening").deleteMany({}),
+        db.collection("activeSessions").deleteMany({}),
+        db.collection("sessionParticipants").deleteMany({}),
+    ]);
+
+    return {
+        userStats: userStats.deletedCount,
+        serverStats: serverStats.deletedCount,
+        trackStats: trackStats.deletedCount,
+        sharedListening: sharedListening.deletedCount,
+        activeSessions: activeSessions.deletedCount,
+        sessionParticipants: sessionParticipants.deletedCount,
+    };
+}
+
 /**
  * Clean up orphaned sessions (called on bot startup)
  */
@@ -481,8 +660,11 @@ module.exports = {
     addSessionParticipant,
     removeSessionParticipant,
     getUserStats,
+    clearGlobalProfileStats,
     getTopServers,
     getTopFriends,
     getTopTracks,
+    removeProfileTrackWording,
+    resetUserProfileStats,
     cleanupOrphanedSessions,
 };

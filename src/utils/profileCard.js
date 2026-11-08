@@ -2,6 +2,7 @@
 const path = require('path');
 const fs = require('fs');
 const { createCanvas, loadImage, GlobalFonts } = require('@napi-rs/canvas');
+const { getProfileTrackDisplayName } = require('./search');
 
 // ============================================================
 // EUPHIE PLAYCARD
@@ -615,7 +616,7 @@ function drawEmpty(ctx, c) {
 // RANKED STATISTICS
 // ============================================================
 
-function drawRows(ctx, c, rows, labelFn, timeFn) {
+function drawRows(ctx, c, rows, labelFn, timeFn, labelColor = C.muted) {
     if (!rows.length) {
         drawEmpty(ctx, c);
         return;
@@ -658,7 +659,7 @@ function drawRows(ctx, c, rows, labelFn, timeFn) {
 
         // Item name
         ctx.font = regular(21);
-        ctx.fillStyle = C.muted;
+        ctx.fillStyle = labelColor;
 
         const separator = ' · ';
         const max = c.x + c.w - 20 -
@@ -696,12 +697,12 @@ async function generateProfileCard(
     // Avatar customization
     const av = { x: 116, y: 121, r: 78 };
     const shape = userSettings?.avatarShape === 'square' ? 'square' : 'circle';
-    const border = userSettings?.avatarBorder; // 'none' | '#hex' | null / 'default'
-    const avBg = (userSettings?.avatarBackground && userSettings.avatarBackground.startsWith('#')) ? userSettings.avatarBackground : C.avatarFallback;
+    const border = userSettings?.avatarBorder;
+    const avBg = userSettings?.avatarBackground || C.avatarFallback;
 
     // Draw border ring if not 'none'
     if (border !== 'none') {
-        ctx.fillStyle = (border && border !== 'default' && border.startsWith('#')) ? border : C.avatarRing;
+        ctx.fillStyle = border && border !== 'default' ? border : C.avatarRing;
         if (shape === 'square') {
             roundRect(ctx, av.x - av.r - 6, av.y - av.r - 6, (av.r + 6) * 2, (av.r + 6) * 2, 22);
             ctx.fill();
@@ -773,6 +774,7 @@ async function generateProfileCard(
 
     // Check privacy settings
     const privacy = userSettings?.profilePrivacy || { servers: true, friends: true, tracks: true };
+    const statsLabelColor = userSettings?.profileStatsColor || C.muted;
     const servers = (privacy.servers !== false && Array.isArray(topServers)) ? topServers : [];
 
     drawRows(
@@ -799,7 +801,8 @@ async function generateProfileCard(
             }
             return name || server.guildName || 'Unknown Server';
         },
-        server => formatDuration(server.listeningMs)
+        server => formatDuration(server.listeningMs),
+        statsLabelColor
     );
 
     // Top friends
@@ -833,7 +836,8 @@ async function generateProfileCard(
                 ? (fetched.displayName || fetched.username)
                 : 'Unknown';
         },
-        friend => formatDuration(friend.totalSharedMs)
+        friend => formatDuration(friend.totalSharedMs),
+        statsLabelColor
     );
 
     // Top tracks
@@ -843,8 +847,9 @@ async function generateProfileCard(
         ctx,
         CARD.tracks,
         tracks,
-        track => String(track.trackTitle || 'Unknown Track'),
-        track => formatDuration(track.listeningMs)
+        track => getProfileTrackDisplayName(track),
+        track => formatDuration(track.listeningMs),
+        statsLabelColor
     );
 
     return canvas.toBuffer('image/png');

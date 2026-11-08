@@ -17,6 +17,11 @@ const config = require("../../config");
  * Handle all button and select menu interactions from the player container
  */
 async function handleButtonInteraction(client, interaction) {
+    if (interaction.customId?.startsWith("clearglobalstats:")) {
+        await require("../commands/clearglobalstats").handleButton(interaction);
+        return;
+    }
+
     // Handle help menu interactions
     if (interaction.customId?.startsWith('help_')) {
         const helpCommand = require('../commands/help');

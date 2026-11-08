@@ -3,11 +3,116 @@ const { createChatPlayIdleContainer } = require("../utils/components");
 const { EmbedBuilder, MessageFlags } = require("discord.js");
 const { addSessionParticipant, removeSessionParticipant } = require("../utils/mongoStats");
 const coordinator = require("../utils/mongoCoordinator");
+const { consumeJockieCommand } = require("../utils/jockieJoinContext");
 const recentDisconnectNotices = new Set();
+const JOCKIE_BOT_IDS = new Set([
+    "411916947773587456",
+    "412347257233604609",
+    "412347553141751808",
+    "412347780841865216",
+]);
+const recentJockieJoinNotices = new Set();
 
 module.exports = {
     name: "voiceStateUpdate",
     async execute(client, oldState, newState) {
+        const primaryClient = coordinator.getClient(
+            coordinator.primaryBotId || "euphie_main"
+        );
+        const joinedChannel =
+            newState.channelId && oldState.channelId !== newState.channelId;
+        const isBot = newState.member?.user?.bot;
+        const botUsername = newState.member?.user?.username || "";
+        if (
+            joinedChannel &&
+            isBot &&
+            /jockie/i.test(botUsername) &&
+            !JOCKIE_BOT_IDS.has(newState.id)
+        ) {
+            console.warn(
+                `[euphire] Jockie bot joined with unconfigured user ID ${newState.id}`
+            );
+        }
+
+        const joinedJockie =
+            joinedChannel &&
+            isBot &&
+            JOCKIE_BOT_IDS.has(newState.id);
+
+        if (joinedJockie && client === primaryClient) {
+            const noticeKey =
+                `${newState.guild.id}:${newState.channelId}:${newState.id}`;
+            if (!recentJockieJoinNotices.has(noticeKey)) {
+                recentJockieJoinNotices.add(noticeKey);
+                const noticeCleanup = setTimeout(
+                    () => recentJockieJoinNotices.delete(noticeKey),
+                    15000
+                );
+                noticeCleanup.unref?.();
+
+                console.log(
+                    `[euphire] Detected Jockie bot ${newState.id} joining voice channel ${newState.channelId}`
+                );
+                const joinContext = consumeJockieCommand(
+                    newState.guild.id,
+                    newState.channelId
+                );
+                const primaryGuild =
+                    primaryClient.guilds.cache.get(newState.guild.id);
+                let targetChannel = joinContext
+                    ? primaryClient.channels.cache.get(
+                          joinContext.textChannelId
+                      )
+                    : null;
+                if (!targetChannel && joinContext && primaryGuild) {
+                    targetChannel =
+                        primaryGuild.channels.cache.get(
+                            joinContext.textChannelId
+                        ) || null;
+                    if (!targetChannel) {
+                        try {
+                            targetChannel = await primaryClient.channels.fetch(
+                                joinContext.textChannelId
+                            );
+                        } catch (error) {
+                            console.warn(
+                                `[euphire] Could not fetch command channel ${joinContext.textChannelId} through the primary bot: ${error.message}`
+                            );
+                        }
+                    }
+                }
+                if (!targetChannel) {
+                    targetChannel =
+                        primaryClient.channels.cache.get(newState.channelId) ||
+                        primaryGuild?.channels.cache.get(newState.channelId) ||
+                        null;
+                }
+
+                if (targetChannel?.send) {
+                    const embed = new EmbedBuilder()
+                        .setColor(0xf4a7c7)
+                        .setDescription(
+                            "Hey, I'm here too! Let me play something for you? 🎶\nTry `e!play <song>`"
+                        );
+                    try {
+                        await targetChannel.send({ embeds: [embed] });
+                        console.log(
+                            `[euphire] Sent Jockie join message to channel ${targetChannel.id}`
+                        );
+                    } catch (error) {
+                        console.error(
+                            `[euphire] Could not send Jockie join message in channel ${targetChannel.id}:`,
+                            error.message
+                        );
+                    }
+                } else {
+                    console.warn(
+                        `[euphire] Jockie joined channel ${newState.channelId}, but no text-sendable channel was found`
+                    );
+                }
+            }
+        }
+
         // Track shared listening: user joins/leaves voice channel while music is playing
         const member = newState.member || oldState.member;
         if (oldState.id !== client.user.id && !member?.user?.bot) {

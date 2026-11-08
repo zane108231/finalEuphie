@@ -377,6 +377,69 @@ function getTrackDisplayName(track) {
     return author === "Unknown artist" ? title : `${title} by ${author}`;
 }
 
+function getProfileTrackDisplayName(track) {
+    const rawTrackTitle = String(track?.trackTitle || "Unknown Track");
+    const rawTitle = cleanDisplayTitle(rawTrackTitle);
+    const artistSource = String(track?.trackArtistSource || "").toLowerCase();
+    const storedArtist = cleanDisplayArtist(track?.trackArtist || "").replace(
+        /\s+-\s+Topic$/i,
+        ""
+    );
+    const byMatch = rawTitle.match(/^(.*?)\s+by\s+(.+)$/i);
+    if (byMatch) {
+        const title = cleanDisplayTitle(byMatch[1]);
+        const artist = cleanDisplayArtist(byMatch[2]);
+        if (title && artist && artist !== "Unknown artist") {
+            return `${title} - ${artist}`;
+        }
+    }
+
+    const parts = rawTitle
+        .split(/\s+[-–—]\s+/)
+        .map((part) => cleanDisplayTitle(part))
+        .filter(Boolean);
+    if (parts.length > 1) {
+        const normalizedArtist = normalizeSearchText(storedArtist);
+        const artistIndex = storedArtist
+            ? parts.findIndex(
+                  (part) => normalizeSearchText(part) === normalizedArtist
+              )
+            : -1;
+        if (artistIndex !== -1) {
+            const title = parts
+                .filter((_, index) => index !== artistIndex)
+                .join(" - ")
+                .trim();
+            if (title) return `${title} - ${storedArtist}`;
+        }
+
+        const inferredArtist = cleanDisplayArtist(parts[0]);
+        const inferredTitle = parts.slice(1).join(" - ").trim();
+        if (inferredArtist && inferredTitle) {
+            return `${inferredTitle} - ${inferredArtist}`;
+        }
+    }
+
+    const isYoutubeTrack =
+        /youtube/i.test(String(track?.trackSourceName || "")) ||
+        /(?:youtube\.com|youtu\.be)/i.test(String(track?.trackUri || ""));
+    if (
+        isYoutubeTrack &&
+        artistSource !== "spotify" &&
+        artistSource !== "parsed"
+    ) {
+        return rawTitle;
+    }
+
+    if (!storedArtist || storedArtist === "Unknown artist") return rawTitle;
+
+    const byArtist = rawTitle.match(
+        new RegExp(`^(.*?)\\s+by\\s+${storedArtist.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i")
+    );
+    const title = cleanDisplayTitle(byArtist ? byArtist[1] : rawTitle);
+    return title ? `${title} - ${storedArtist}` : storedArtist;
+}
+
 function getSpotifyTrackDisplayName(track) {
     const info = track?.info || {};
     const sourceName = String(info.sourceName || "").toLowerCase();
@@ -400,8 +463,12 @@ function getTrackDisplayParts(track) {
     if (sourceName === "youtube" || sourceName === "youtube music") {
         const parsed = parseVideoDisplayMetadata(track.info.title);
         return {
-            title: track.info.displayTitle || parsed.title,
-            author: track.info.displayAuthor || parsed.author,
+            title: cleanDisplayTitle(
+                track.info.displayTitle || parsed.title
+            ),
+            author: cleanDisplayArtist(
+                track.info.displayAuthor || parsed.author
+            ),
         };
     }
 
@@ -605,8 +672,14 @@ function parseVideoDisplayMetadata(videoTitle, query = "") {
 
 function cleanDisplayTitle(value) {
     return String(value || "Unknown track")
-        .replace(/\s*[\[(](?:official\s+)?(?:audio|lyrics?|lyric\s+video|music\s+video|visuali[sz]er)[^\])]*[\])]/gi, "")
-        .replace(/\s*[-–—]\s*(?:official\s+)?(?:audio|lyrics?|lyric\s+video|music\s+video|visuali[sz]er)\b.*$/i, "")
+        .replace(
+            /\s*[\[(][^\])]*(?:official\s+)?(?:lyrics?|lyric\s+video|music\s+video|official\s+video|visuali[sz]er|audio)[^\])]*[\])]/gi,
+            ""
+        )
+        .replace(
+            /\s*[-–—|]\s*(?:official\s+)?(?:lyrics?|lyric\s+video|music\s+video|official\s+video|visuali[sz]er|audio)\b.*$/i,
+            ""
+        )
         .replace(/\p{Extended_Pictographic}/gu, "")
         .replace(/\s+/g, " ")
         .trim();
@@ -614,7 +687,14 @@ function cleanDisplayTitle(value) {
 
 function cleanDisplayArtist(value) {
     return String(value || "Unknown artist")
-        .replace(/\s*[-–—]\s*(?:official\s+)?(?:audio|lyrics?|lyric\s+video|music\s+video|visuali[sz]er)\b.*$/i, "")
+        .replace(
+            /\s*[-–—|]\s*(?:official\s+)?(?:lyrics?|lyric\s+video|music\s+video|official\s+video|visuali[sz]er|audio)\b.*$/i,
+            ""
+        )
+        .replace(
+            /\s*[\[(][^\])]*(?:official\s+)?(?:lyrics?|lyric\s+video|music\s+video|official\s+video|visuali[sz]er|audio)[^\])]*[\])]/gi,
+            ""
+        )
         .replace(/\p{Extended_Pictographic}/gu, "")
         .replace(/\s+/g, " ")
         .trim();
@@ -644,6 +724,7 @@ module.exports = {
     buildIdentifiers,
     rankSearchTracks,
     getTrackDisplayName,
+    getProfileTrackDisplayName,
     getSpotifyTrackDisplayName,
     getTrackDisplayParts,
     getSpotifyTrackUrl,

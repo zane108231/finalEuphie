@@ -26,26 +26,25 @@ const trackErrorNotices = new Map();
 
 const UPDATE_INTERVAL_MS = 30 * 1000; // Increased to 30 seconds to reduce CPU load
 
-function queueTrackErrorNotice(channel, guildId, title) {
+function queueTrackErrorNotice(channel, guildId) {
     let notice = trackErrorNotices.get(guildId);
     if (!notice) {
-        notice = { titles: [], timer: null };
+        notice = { count: 0, timer: null };
         trackErrorNotices.set(guildId, notice);
     }
 
-    notice.titles.push(String(title || "Unknown track").slice(0, 100));
+    notice.count++;
     clearTimeout(notice.timer);
     notice.timer = setTimeout(() => {
         trackErrorNotices.delete(guildId);
-        const shownTitles = notice.titles.slice(0, 5);
-        const moreCount = notice.titles.length - shownTitles.length;
-        const titleList = shownTitles
-            .map((trackTitle) => `• ${trackTitle}`)
-            .join("\n");
-        const moreText = moreCount > 0 ? `\n• and ${moreCount} more` : "";
-        channel.send(
-            `⚠️ ${notice.titles.length} track(s) failed to play and were skipped.\n${titleList}${moreText}\nCheck Lavalink logs for the playback error details.`
-        ).catch((error) => {
+        const embed = new EmbedBuilder()
+            .setColor(0xed4245)
+            .setDescription(
+                notice.count === 1
+                    ? "Could not play that song."
+                    : `Could not play ${notice.count} songs. They were skipped.`
+            );
+        channel.send({ embeds: [embed] }).catch((error) => {
             console.error("[euphire] Failed to send track error summary:", error.message);
         });
     }, 5000);
@@ -547,6 +546,18 @@ function setupPlayerHandler(client) {
             // Clear queue end time since a new track started
             guildData.queueEndTime = null;
 
+            if (!track?.info?.spotifyTitle) {
+                const requester =
+                    track?.info?.requester ||
+                    (player.requesterId ? { id: player.requesterId } : null);
+                const spotifyMetadata = await findSpotifyTrackMetadata(
+                    client.riffy,
+                    track,
+                    requester
+                );
+                applySpotifyTrackMetadata(track, spotifyMetadata);
+            }
+
             // Start statistics tracking session
             try {
                 const requester = track.info.requester;
@@ -600,18 +611,6 @@ function setupPlayerHandler(client) {
 
             // Start voice channel monitoring
             startVoiceChannelMonitoring(client, player.guildId);
-
-            if (!track?.info?.spotifyTitle) {
-                const requester =
-                    track?.info?.requester ||
-                    (player.requesterId ? { id: player.requesterId } : null);
-                const spotifyMetadata = await findSpotifyTrackMetadata(
-                    client.riffy,
-                    track,
-                    requester
-                );
-                applySpotifyTrackMetadata(track, spotifyMetadata);
-            }
 
             await announceNowPlaying(client, player, track, guildData);
 
@@ -996,11 +995,7 @@ function setupPlayerHandler(client) {
         
         const assignedChannel = resolveAssignedChannel(client, player, guildData);
         if (assignedChannel) {
-            queueTrackErrorNotice(
-                assignedChannel,
-                player.guildId,
-                track?.info?.title
-            );
+            queueTrackErrorNotice(assignedChannel, player.guildId);
         }
     });
 
@@ -1009,8 +1004,9 @@ function setupPlayerHandler(client) {
         stopPlayerTracking(player);
         
         // End statistics session (stuck - not natural completion)
+        let freshGuildData = null;
         try {
-            const freshGuildData = await getGuildData(player.guildId);
+            freshGuildData = await getGuildData(player.guildId);
             if (freshGuildData.currentSessionId) {
                 console.log("[euphire] trackStuck: ending session (stuck)");
                 await endSession(freshGuildData.currentSessionId, false);
@@ -1021,9 +1017,18 @@ function setupPlayerHandler(client) {
             console.error("[euphire] Failed to end stats session on track stuck:", err.message);
         }
         
-        const assignedChannel = resolveAssignedChannel(client, player, freshGuildData);
+        const assignedChannel = resolveAssignedChannel(
+            client,
+            player,
+            freshGuildData || getGuildData(player.guildId)
+        );
         if (assignedChannel) {
-            assignedChannel.send(`⚠️ Track stuck: **${track.info.title}**. Skipping...`).catch(() => {});
+            const embed = new EmbedBuilder()
+                .setColor(0xed4245)
+                .setDescription("Could not play that song.");
+            assignedChannel.send({ embeds: [embed] }).catch((error) => {
+                console.error("[euphire] Failed to send track status:", error.message);
+            });
         }
     });
 }

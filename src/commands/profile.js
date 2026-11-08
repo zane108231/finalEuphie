@@ -2,6 +2,7 @@ const { MessageFlags, AttachmentBuilder, SlashCommandBuilder, EmbedBuilder } = r
 const { getUserStats, getTopServers, getTopFriends, getTopTracks } = require("../utils/mongoStats");
 const { getUserData, saveUserData, saveUserBackground, deleteUserBackground } = require("../utils/mongoUserData");
 const { generateProfileCard, loadImageFromURL } = require("../utils/profileCard");
+const { createCanvas } = require("@napi-rs/canvas");
 const { isServerAdmin } = require("../utils/permissions");
 const fs = require("fs");
 const path = require("path");
@@ -49,6 +50,22 @@ async function resolveDiscordUrl(url, client) {
 // Prevent double execution
 const executingProfiles = new Map();
 
+function parseProfileColor(value) {
+    const color = String(value || "").trim();
+    if (!/^[a-z]+$/i.test(color)) return null;
+
+    const context = createCanvas(1, 1).getContext("2d");
+    context.fillStyle = "#010203";
+    const unchangedColor = context.fillStyle;
+    context.fillStyle = color;
+    return context.fillStyle !== unchangedColor ? color : null;
+}
+
+function displayColorSetting(color, fallback) {
+    if (!color) return fallback;
+    return color.startsWith("#") ? "custom color" : color;
+}
+
 /**
  * Handle e!profile set background <background>
  */
@@ -77,6 +94,7 @@ async function handleSetBackground(interaction, client, args) {
                 "```\n" +
                 "profile set background avatar\n" +
                 "profile set background color\n" +
+                "profile set background color orange\n" +
                 "profile set background default\n" +
                 "profile set background https://cdn.discordapp.com/attachments/.../bg.png\n" +
                 "```"
@@ -112,14 +130,21 @@ async function handleSetBackground(interaction, client, args) {
 
     if (lower === "color" || lower === "colour") {
         const colorArg = (args[1] || "").trim();
-        if (colorArg && /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(colorArg)) {
-            userSettings.profileColor = colorArg.startsWith("#") ? colorArg : `#${colorArg}`;
+        if (colorArg) {
+            const profileColor = parseProfileColor(colorArg);
+            if (!profileColor) {
+                return interaction.reply({
+                    content: "❌ Choose a valid color name, such as white, red, or orange.",
+                    flags: MessageFlags.Ephemeral,
+                });
+            }
+            userSettings.profileColor = profileColor;
         }
         userSettings.profileBackground = "color";
         await saveUserData(interaction.user.id, userSettings);
         const embed = new EmbedBuilder()
             .setColor(config.accentColor || 0x2b2d31)
-            .setDescription(`✅ Profile background set to plain color **${userSettings.profileColor || "#2b2d31"}** (cat watermark removed). Use \`e!profile\` to view your card.`);
+            .setDescription("✅ Profile background set to a plain color (cat watermark removed). Use `e!profile` to view your card.");
         return interaction.reply({ embeds: [embed] });
     }
 
@@ -176,38 +201,65 @@ async function handleSetBackground(interaction, client, args) {
 }
 
 /**
- * Handle e!profile set color <hex>
+ * Handle e!profile set color <color name>
  */
 async function handleSetColor(interaction, client, args) {
     const colorArg = (args[0] || "").trim();
-    if (!colorArg || !/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(colorArg)) {
+    const color = parseProfileColor(colorArg);
+    if (!color) {
         const embed = new EmbedBuilder()
             .setColor(config.accentColor || 0x2b2d31)
             .setTitle("Help for command: profile set color")
             .setDescription(
                 "Set your profile color.\n\n" +
                 "**Usage**\n" +
-                "```\ne!profile set color <color>\n```\n\n" +
+                "```\ne!profile set color <color name>\n```\n\n" +
                 "**Examples**\n" +
                 "```\n" +
-                "profile set color #5865F2\n" +
-                "profile set color #1e1f22\n" +
-                "profile set color #ff0000\n" +
+                "profile set color white\n" +
+                "profile set color red\n" +
+                "profile set color orange\n" +
                 "```"
             );
         return interaction.reply({ embeds: [embed] });
     }
 
-    const hex = colorArg.startsWith("#") ? colorArg : `#${colorArg}`;
     const userSettings = await getUserData(interaction.user.id);
-    userSettings.profileColor = hex;
+    userSettings.profileColor = color;
     await saveUserData(interaction.user.id, userSettings);
 
     const embed = new EmbedBuilder()
         .setColor(config.accentColor || 0x2b2d31)
-        .setDescription(`✅ Profile color set to **${hex}**. Use \`e!profile\` to view your card.`);
+        .setDescription(`✅ Profile color set to **${colorArg}**. Use \`e!profile\` to view your card.`);
 
     return interaction.reply({ embeds: [embed] });
+}
+
+async function handleSetStatsColor(interaction, args) {
+    const colorArg = (args[0] || "").trim();
+    if (colorArg.toLowerCase() === "default" || colorArg.toLowerCase() === "reset") {
+        const userSettings = await getUserData(interaction.user.id);
+        userSettings.profileStatsColor = null;
+        await saveUserData(interaction.user.id, userSettings);
+        return interaction.reply({
+            content: "✅ Profile server, friend, and track text color reset to the default gray.",
+        });
+    }
+
+    const color = parseProfileColor(colorArg);
+    if (!color) {
+        return interaction.reply({
+            content: "Set the server, friend, and track text color with a color name, such as `white`, `red`, or `orange`.\nUsage: `e!profile set stats color <color name>` (or `default`).",
+            flags: MessageFlags.Ephemeral,
+        });
+    }
+
+    const userSettings = await getUserData(interaction.user.id);
+    userSettings.profileStatsColor = color;
+    await saveUserData(interaction.user.id, userSettings);
+    return interaction.reply({
+        content: `✅ Profile server, friend, and track text color set to **${colorArg}**.`,
+    });
 }
 
 /**
@@ -350,14 +402,14 @@ async function handleSetAvatarShape(interaction, client, args) {
 }
 
 /**
- * Handle e!profile set avatar border <color | none | default>
+ * Handle e!profile set avatar border <color name | none | default>
  */
 async function handleSetAvatarBorder(interaction, client, args) {
     const border = (args[0] || "").toLowerCase().trim();
     const userSettings = await getUserData(interaction.user.id);
 
     if (!border) {
-        const current = userSettings.avatarBorder || "default";
+        const current = displayColorSetting(userSettings.avatarBorder, "default");
         const embed = new EmbedBuilder()
             .setColor(config.accentColor || 0x2b2d31)
             .setTitle("Help for command: profile set avatar border")
@@ -365,10 +417,11 @@ async function handleSetAvatarBorder(interaction, client, args) {
                 "Set your profile avatar border.\n\n" +
                 `**Current Setting**: \`${current}\`\n\n` +
                 "**Usage**\n" +
-                "```\ne!profile set avatar border <color | none | default>\n```\n\n" +
+                "```\ne!profile set avatar border <color name | none | default>\n```\n\n" +
                 "**Examples**\n" +
                 "```\n" +
-                "profile set avatar border #5865F2\n" +
+                "profile set avatar border white\n" +
+                "profile set avatar border orange\n" +
                 "profile set avatar border none\n" +
                 "profile set avatar border default\n" +
                 "```"
@@ -380,20 +433,22 @@ async function handleSetAvatarBorder(interaction, client, args) {
         userSettings.avatarBorder = "none";
     } else if (border === "default" || border === "reset") {
         userSettings.avatarBorder = null;
-    } else if (/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(border)) {
-        userSettings.avatarBorder = border.startsWith("#") ? border : `#${border}`;
     } else {
-        return interaction.reply({
-            content: "❌ Please provide a valid hex color code (e.g. `#5865F2`), `none`, or `default`.",
-            flags: MessageFlags.Ephemeral,
-        });
+        const color = parseProfileColor(border);
+        if (!color) {
+            return interaction.reply({
+                content: "❌ Choose a color name such as white, red, or orange, or use `none` or `default`.",
+                flags: MessageFlags.Ephemeral,
+            });
+        }
+        userSettings.avatarBorder = color;
     }
 
     await saveUserData(interaction.user.id, userSettings);
 
     const embed = new EmbedBuilder()
         .setColor(config.accentColor || 0x2b2d31)
-        .setDescription(`✅ Profile avatar border set to **${userSettings.avatarBorder || "default"}**. Use \`e!profile\` to view your card.`);
+        .setDescription(`✅ Profile avatar border set to **${displayColorSetting(userSettings.avatarBorder, "default")}**. Use \`e!profile\` to view your card.`);
 
     return interaction.reply({ embeds: [embed] });
 }
@@ -446,14 +501,14 @@ async function handleSetServerVisibility(interaction, client, args) {
 }
 
 /**
- * Handle e!profile set avatar background <color | default>
+ * Handle e!profile set avatar background <color name | default>
  */
 async function handleSetAvatarBackground(interaction, client, args) {
     const val = (args[0] || "").toLowerCase().trim();
     const userSettings = await getUserData(interaction.user.id);
 
     if (!val) {
-        const current = userSettings.avatarBackground || "default";
+        const current = displayColorSetting(userSettings.avatarBackground, "default");
         const embed = new EmbedBuilder()
             .setColor(config.accentColor || 0x2b2d31)
             .setTitle("Help for command: profile set avatar background")
@@ -461,10 +516,11 @@ async function handleSetAvatarBackground(interaction, client, args) {
                 "Set your profile avatar background.\n\n" +
                 `**Current Setting**: \`${current}\`\n\n` +
                 "**Usage**\n" +
-                "```\ne!profile set avatar background <color | default>\n```\n\n" +
+                "```\ne!profile set avatar background <color name | default>\n```\n\n" +
                 "**Examples**\n" +
                 "```\n" +
-                "profile set avatar background #000000\n" +
+                "profile set avatar background white\n" +
+                "profile set avatar background orange\n" +
                 "profile set avatar background default\n" +
                 "```"
             );
@@ -473,20 +529,22 @@ async function handleSetAvatarBackground(interaction, client, args) {
 
     if (val === "default" || val === "reset") {
         userSettings.avatarBackground = null;
-    } else if (/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(val)) {
-        userSettings.avatarBackground = val.startsWith("#") ? val : `#${val}`;
     } else {
-        return interaction.reply({
-            content: "❌ Please provide a valid hex color code (e.g. `#000000`) or `default`.",
-            flags: MessageFlags.Ephemeral,
-        });
+        const color = parseProfileColor(val);
+        if (!color) {
+            return interaction.reply({
+                content: "❌ Choose a color name such as white, red, or orange, or use `default`.",
+                flags: MessageFlags.Ephemeral,
+            });
+        }
+        userSettings.avatarBackground = color;
     }
 
     await saveUserData(interaction.user.id, userSettings);
 
     const embed = new EmbedBuilder()
         .setColor(config.accentColor || 0x2b2d31)
-        .setDescription(`✅ Profile avatar background set to **${userSettings.avatarBackground || "default"}**. Use \`e!profile\` to view your card.`);
+        .setDescription(`✅ Profile avatar background set to **${displayColorSetting(userSettings.avatarBackground, "default")}**. Use \`e!profile\` to view your card.`);
 
     return interaction.reply({ embeds: [embed] });
 }
@@ -538,6 +596,12 @@ module.exports = {
             if (subAction === "color" || subAction === "colour") {
                 return await handleSetColor(interaction, client, rawArgs.slice(2));
             }
+            if (subAction === "stats" && thirdArg === "color") {
+                return await handleSetStatsColor(interaction, rawArgs.slice(3));
+            }
+            if (subAction === "stats" && thirdArg === "colour") {
+                return await handleSetStatsColor(interaction, rawArgs.slice(3));
+            }
             if (subAction === "privacy") {
                 return await handleSetPrivacy(interaction, client, rawArgs.slice(2));
             }
@@ -579,6 +643,13 @@ module.exports = {
 
         if (firstArg === "color" || firstArg === "colour") {
             return await handleSetColor(interaction, client, rawArgs.slice(1));
+        }
+
+        if (
+            firstArg === "stats" &&
+            ["color", "colour"].includes((rawArgs[1] || "").toLowerCase())
+        ) {
+            return await handleSetStatsColor(interaction, rawArgs.slice(2));
         }
 
         if (firstArg === "privacy") {

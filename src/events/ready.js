@@ -48,6 +48,10 @@ module.exports = {
             const commands = client.botId === "euphie_main"
                 ? [
                     require("../commands/botprofile").data.toJSON(),
+                    require("../commands/announce").data.toJSON(),
+                    require("../commands/cleanprofile").data.toJSON(),
+                    require("../commands/resetstats").data.toJSON(),
+                    require("../commands/clearglobalstats").data.toJSON(),
                     require("../commands/modelprofile").data.toJSON(),
                     require("../commands/developerprofile").data.toJSON(),
                     ...require("../commands/model").commands.map((command) => command.data.toJSON()),
@@ -62,7 +66,7 @@ module.exports = {
             }
             console.log(
                 commands.length
-                    ? "[euphire] Registered the profile and model commands; cleared server-specific commands."
+                    ? "[euphire] Registered the profile, announcement, cleanup, reset-stats, global-stats, and model commands; cleared server-specific commands."
                     : "[euphire] Cleared global and server-specific slash commands for this secondary bot."
             );
         } catch (error) {

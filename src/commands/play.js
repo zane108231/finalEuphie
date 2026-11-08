@@ -161,6 +161,12 @@ function getLoadFailureMessage(exception) {
         .slice(0, 500);
 }
 
+function buildPlayErrorEmbed() {
+    return new EmbedBuilder()
+        .setColor(0xed4245)
+        .setDescription("Could not find song");
+}
+
 function buildAddedPlaylistEmbed(
     client,
     playlist,
@@ -280,8 +286,34 @@ async function resolveSpotifyTracksAudio(riffy, tracks, requester, onBatch) {
     }
 }
 
+async function resolveInitialPlaylistTracks(riffy, tracks, requester) {
+    const playableTracks = [];
+    let failedTrackCount = 0;
+    let nextIndex = 0;
+
+    while (nextIndex < tracks.length && playableTracks.length < 4) {
+        const batch = tracks.slice(nextIndex, nextIndex + 4);
+        const resolvedBatch = await Promise.all(
+            batch.map((track) =>
+                resolveSpotifyTrackAudio(riffy, track, requester)
+            )
+        );
+        nextIndex += batch.length;
+        failedTrackCount += resolvedBatch.filter((track) => !track).length;
+
+        for (const track of resolvedBatch.filter(Boolean)) {
+            track.info.requester = requester;
+            setTrackDisplayMetadata(track, null);
+            playableTracks.push(track);
+        }
+    }
+
+    return { playableTracks, failedTrackCount, nextIndex };
+}
+
 module.exports = {
     aliases: ["p"],
+    resolveInitialPlaylistTracks,
     data: new SlashCommandBuilder()
         .setName("play")
         .setDescription("Play a song or add it to the queue")
@@ -476,29 +508,19 @@ module.exports = {
                 const orderedTracks = guildData.shuffle
                     ? shuffleArray(tracks)
                     : tracks;
-
-                let firstQueuedIndex = -1;
-                for (let index = 0; index < orderedTracks.length; index++) {
-                    const track = await resolveSpotifyTrackAudio(
+                const initialPlaylistBatch =
+                    await resolveInitialPlaylistTracks(
                         client.riffy,
-                        orderedTracks[index],
+                        orderedTracks,
                         interaction.user
                     );
-                    if (!track) {
-                        failedTrackCount++;
-                        continue;
-                    }
-
-                    track.info.requester = interaction.user;
-                    setTrackDisplayMetadata(track, null);
-
+                failedTrackCount = initialPlaylistBatch.failedTrackCount;
+                for (const track of initialPlaylistBatch.playableTracks) {
                     player.queue.add(track);
                     addedTracks.push(track.info.title || "Unknown");
-                    firstQueuedIndex = index;
-                    break;
                 }
 
-                if (firstQueuedIndex === -1) {
+                if (initialPlaylistBatch.playableTracks.length === 0) {
                     return interaction.editReply({
                         content: tracks.length > 0
                             ? `❌ None of the ${tracks.length} Spotify tracks had a matching YouTube result.`
@@ -562,7 +584,9 @@ module.exports = {
                     initialEmbed
                 );
 
-                const remainingTracks = orderedTracks.slice(firstQueuedIndex + 1);
+                const remainingTracks = orderedTracks.slice(
+                    initialPlaylistBatch.nextIndex
+                );
                 const playlistResolution = (async () => {
                     try {
                         await resolveSpotifyTracksAudio(
@@ -663,7 +687,9 @@ module.exports = {
             ) {
                 let track = tracks[0];
                 if (!track) {
-                    return interaction.editReply({ content: "❌ No results found." });
+                    return interaction.editReply({
+                        embeds: [buildPlayErrorEmbed()],
+                    });
                 }
 
                 track = await resolveSpotifyTrackAudio(
@@ -673,7 +699,7 @@ module.exports = {
                 );
                 if (!track) {
                     return interaction.editReply({
-                        content: "❌ Could not find a matching YouTube video for that Spotify song.",
+                        embeds: [buildPlayErrorEmbed()],
                     });
                 }
 
@@ -734,13 +760,13 @@ module.exports = {
                     `[euphire] No playable results for "${query}" (loadType: ${loadType})${failure ? `: ${failure}` : ""}`
                 );
                 return interaction.editReply({
-                    content: `❌ Could not load that track or playlist${failure ? `: ${failure}` : ` (Lavalink: ${loadType})`}`,
+                    embeds: [buildPlayErrorEmbed()],
                 });
             }
         } catch (error) {
             console.error("[euphire] Play error:", error.message);
             return interaction.editReply({
-                content: `❌ An error occurred while searching: ${error.message}`,
+                embeds: [buildPlayErrorEmbed()],
             });
         }
     },

@@ -34,6 +34,12 @@ async function sendPublicEmbed(interaction, embed) {
     }
 }
 
+function buildSearchErrorEmbed() {
+    return new EmbedBuilder()
+        .setColor(0xed4245)
+        .setDescription("Could not find song");
+}
+
 module.exports = {
     aliases: ["ins"],
     data: new SlashCommandBuilder()
@@ -276,7 +282,9 @@ module.exports = {
             ) {
                 const track = tracks[0];
                 if (!track) {
-                    return interaction.editReply({ content: "❌ No results found." });
+                    return interaction.editReply({
+                        embeds: [buildSearchErrorEmbed()],
+                    });
                 }
 
                 setTrackDisplayMetadata(track, query);
@@ -331,11 +339,15 @@ module.exports = {
 
                 await sendPublicEmbed(interaction, embed);
             } else {
-                return interaction.editReply({ content: `❌ No results found. (loadType: ${loadType})` });
+                return interaction.editReply({
+                    embeds: [buildSearchErrorEmbed()],
+                });
             }
         } catch (error) {
             console.error("[euphire] Insert error:", error);
-            return interaction.editReply({ content: "❌ An error occurred while searching." });
+            return interaction.editReply({
+                embeds: [buildSearchErrorEmbed()],
+            });
         }
     },
 };
