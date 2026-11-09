@@ -1,6 +1,4 @@
 const SPOTIFY_OEMBED_URL = "https://open.spotify.com/oembed";
-const SPOTIFY_API_BASE_URL =
-    require("../../spotify-api/endpoints.json").spotifyEndpoint.baseUrl;
 
 async function readJsonResponse(response, operation) {
     let body;
@@ -43,38 +41,6 @@ function getSpotifyPlaylistId(value) {
     }
 }
 
-async function searchSpotifyPlaylists(query, limit = 10) {
-    const url = new URL("/api/search", SPOTIFY_API_BASE_URL);
-    url.searchParams.set("query", query.trim());
-    url.searchParams.set("type", "playlist");
-    url.searchParams.set("limit", String(limit));
-
-    const response = await fetch(url, {
-        signal: AbortSignal.timeout(15000),
-    });
-    if (!response.ok) {
-        throw new Error(
-            `Spotify playlist search failed with HTTP ${response.status}.`
-        );
-    }
-
-    const result = await response.json();
-    if (!Array.isArray(result.playlists)) {
-        throw new Error("Spotify playlist search returned an invalid response.");
-    }
-
-    return result.playlists
-        .filter((playlist) => playlist?.identifier && playlist?.url)
-        .map((playlist) => ({
-            id: playlist.identifier,
-            name: playlist.name || "Untitled playlist",
-            url: playlist.url,
-            owner: playlist.owner || null,
-            trackCount: Number(playlist.trackCount) || 0,
-            artworkUrl: playlist.artworkUrl || null,
-        }));
-}
-
 async function getSpotifyPlaylistMetadata(playlistUrl) {
     const playlistId = getSpotifyPlaylistId(playlistUrl);
     if (!playlistId) return null;
@@ -102,6 +68,5 @@ async function getSpotifyPlaylistMetadata(playlistUrl) {
 
 module.exports = {
     getSpotifyPlaylistId,
-    searchSpotifyPlaylists,
     getSpotifyPlaylistMetadata,
 };

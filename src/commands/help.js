@@ -55,7 +55,7 @@ const HELP_PAGES = [
                     { name: "albumsearch", desc: "Search and queue a Spotify album", usage: "albumsearch <album or artist>" },
                     { name: "resumesession", desc: "Resume your saved music session after the bot asks you", usage: "resumesession" },
                     { name: "autoplay toggle", desc: "Toggle autoplay", usage: "autoplay toggle" },
-                    { name: "playlistsearch", desc: "Search and choose a Spotify playlist to play", usage: "playlistsearch <playlist name or URL>" },
+                    { name: "playlistsearch", desc: "Play a Spotify playlist from its URL", usage: "playlistsearch <Spotify playlist URL>" },
                 ],
             },
         ],

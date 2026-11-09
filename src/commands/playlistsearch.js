@@ -10,15 +10,10 @@ const {
 } = require("discord.js");
 const { randomUUID } = require("crypto");
 const { getDB } = require("../utils/database");
-const {
-    getSpotifyPlaylistId,
-    searchSpotifyPlaylists,
-} = require("../utils/spotifyPlaylistSearch");
+const { getSpotifyPlaylistId } = require("../utils/spotifyPlaylistSearch");
 const config = require("../../config");
 
 const PAGE_SIZE = 10;
-const SEARCH_LIMIT = 50;
-const SEARCH_TTL_MS = 10 * 60 * 1000;
 
 function buildPlaylistSearchPayload(search, page = 1) {
     const playlists = search.playlists || [];
@@ -203,11 +198,11 @@ async function handleInteraction(interaction, client) {
 module.exports = {
     data: new SlashCommandBuilder()
         .setName("playlistsearch")
-        .setDescription("Search Spotify playlists and choose one to play")
+        .setDescription("Play a Spotify playlist from its URL")
         .addStringOption((option) =>
             option
                 .setName("query")
-                .setDescription("Playlist name or Spotify playlist URL")
+                .setDescription("Spotify playlist URL")
                 .setRequired(true)
         ),
 
@@ -228,47 +223,15 @@ module.exports = {
         if (!query) {
             return interaction.reply({
                 content:
-                    "Usage: `e!playlistsearch <playlist name or Spotify playlist URL>`",
+                    "Usage: `e!playlistsearch <Spotify playlist URL>`",
                 flags: MessageFlags.Ephemeral,
             });
         }
-
-        if (!interaction.deferred && !interaction.replied) {
-            await interaction.deferReply();
-        }
-
-        try {
-            const playlists = await searchSpotifyPlaylists(
-                query,
-                SEARCH_LIMIT
-            );
-            if (!playlists.length) {
-                return interaction.editReply({
-                    content: `No Spotify playlists found for **${query}**.`,
-                    components: [],
-                });
-            }
-
-            const search = {
-                token: randomUUID(),
-                type: "spotify-playlist-search",
-                userId: interaction.user.id,
-                guildId: interaction.guildId || interaction.guild.id,
-                query,
-                page: 1,
-                playlists,
-                expiresAt: new Date(Date.now() + SEARCH_TTL_MS),
-            };
-            await getDB().collection("playlistSelections").insertOne(search);
-            return interaction.editReply(buildPlaylistSearchPayload(search));
-        } catch (error) {
-            console.error("[euphire] Spotify playlist search failed:", error);
-            return interaction.editReply({
-                content:
-                    "Spotify playlist search is temporarily unavailable. Please try again later.",
-                components: [],
-            });
-        }
+        return interaction.reply({
+            content:
+                "Playlist name search is unavailable. Use a Spotify playlist URL instead.",
+            flags: MessageFlags.Ephemeral,
+        });
     },
 
     handleInteraction,

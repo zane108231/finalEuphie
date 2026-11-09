@@ -56,7 +56,7 @@ docker compose logs -f euphire
    - Update `host`, `port`, `password`, and `secure` in `config.js`.
    - Ensure your Lavalink server is running and reachable.
 
-`e!playlistsearch` can search public Spotify playlists by name or accept a Spotify playlist URL. The Spotify metadata API uses anonymous web-player access (no Spotify developer credentials or Premium account); the bot then searches YouTube for playable audio. This relies on Spotify endpoints that may change without notice.
+`e!playlistsearch` accepts a Spotify playlist URL. The bot uses Lavalink to resolve its tracks and searches YouTube for playable audio. Playlist-name search requires a separate Spotify API service and is not included in the bot.
 
 The `e!lyrics` command searches Genius. Add a Genius API access token to `.env` so search continues to work when Genius blocks unauthenticated requests:
 
