@@ -744,6 +744,13 @@ function setupPlayerHandler(client) {
     // --- Queue End ---
     client.riffy.on("queueEnd", async (player) => {
         try {
+            if (player._restoringSession || player._pendingResumeSnapshot) {
+                console.log(
+                    `[euphire] Ignoring queueEnd while restoring saved session for guild ${player.guildId}`
+                );
+                return;
+            }
+
             // Check if this bot is the session owner for this voice channel
             const sessionOwner = coordinator.getSessionOwner(player.voiceChannel);
             if (sessionOwner && sessionOwner !== client.botId) {
@@ -816,7 +823,7 @@ function setupPlayerHandler(client) {
                     .removeSavedSession(player.guildId)
                     .catch((err) => {
                         console.error(
-                            `[euphire] Failed to clear playback snapshot after playqueue for ${player.guildId}:`,
+                            `[euphire] Failed to clear playback snapshot after playleave for ${player.guildId}:`,
                             err.message
                         );
                     });

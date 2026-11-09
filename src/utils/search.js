@@ -101,12 +101,13 @@ function toResult(response, requester, node) {
     };
 }
 
-function buildIdentifiers(query, source) {
+function buildIdentifiers(query, source, strictSource = false) {
     const trimmed = String(query || "").trim();
     if (!trimmed) return [];
     if (isHttpUrl(trimmed)) return [normalizeSpotifyUrl(trimmed)];
 
     const primary = source || "spsearch";
+    if (strictSource) return [`${primary}:${trimmed}`];
     if (primary === "ytsearch") {
         const searchTerms = trimmed.replace(
             /\s*(?:\(\s*lyrics?\s*\)|lyrics?|lyric\s+video)$/i,
@@ -215,13 +216,20 @@ function rankSearchTracks(tracks, query) {
  * Search Lavalink without Riffy's broken fallback that turns
  * "memories" into https://open.spotify.com/track/memories
  */
-async function resolveTracks(riffy, { query, source, requester, node } = {}) {
+async function resolveTracks(
+    riffy,
+    { query, source, requester, node, strictSource = false } = {}
+) {
     if (!riffy.initiated) throw new Error("You have to initialize Riffy in your ready event");
 
     const requestNode = pickNode(riffy, node);
     if (!requestNode) throw new Error("Lavalink node is not available.");
 
-    const identifiers = buildIdentifiers(query, source || riffy.defaultSearchPlatform);
+    const identifiers = buildIdentifiers(
+        query,
+        source || riffy.defaultSearchPlatform,
+        strictSource
+    );
     if (!identifiers.length) {
         return toResult({ loadType: "empty", data: [] }, requester, requestNode);
     }
@@ -360,6 +368,31 @@ async function searchYoutubeTrack(riffy, track, requester, node) {
     }
 
     return bestLyricMatch || bestFallbackMatch;
+}
+
+async function resolveSpotifyTrackAudio(riffy, track, requester) {
+    if (String(track?.info?.sourceName || "").toLowerCase() !== "spotify") {
+        return track;
+    }
+
+    try {
+        const youtubeTrack = await searchYoutubeTrack(riffy, track, requester);
+        if (!youtubeTrack) {
+            console.warn(
+                `[euphire] No matching YouTube video found for Spotify track "${track.info.title}" by "${track.info.author}"`
+            );
+            return null;
+        }
+
+        track.track = youtubeTrack.track;
+        return track;
+    } catch (error) {
+        console.error(
+            `[euphire] YouTube search failed for Spotify track "${track?.info?.title || "Unknown"}":`,
+            error.message
+        );
+        return null;
+    }
 }
 
 function normalizeSearchText(value) {
@@ -719,6 +752,7 @@ function patchRiffyResolve(riffy) {
 module.exports = {
     resolveTracks,
     searchYoutubeTrack,
+    resolveSpotifyTrackAudio,
     patchRiffyResolve,
     normalizeSpotifyUrl,
     buildIdentifiers,

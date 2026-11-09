@@ -53,7 +53,7 @@ async function saveRecentlyPlayedTrack(track) {
 
 async function persistPlayer(client, player) {
     if (!client || !player?.guildId) return;
-    if (player._pendingResumeSnapshot) return;
+    if (player._restoringSession || player._pendingResumeSnapshot) return;
 
     const queue = Array.from(player.queue || [])
         .map(serializeTrack)
@@ -246,6 +246,7 @@ async function prepareSnapshot(client, snapshot) {
             ? Number(snapshot.volume)
             : guildData.volume || 75,
         requesterId: userId,
+        restoringSession: true,
     });
 
     player.assignedTextChannel = snapshot.textChannelId || null;

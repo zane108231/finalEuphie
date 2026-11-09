@@ -92,7 +92,7 @@ module.exports = {
                     const embed = new EmbedBuilder()
                         .setColor(0xf4a7c7)
                         .setDescription(
-                            "Hey, I'm here too! Let me play something for you? 🎶\nTry `e!play <song>`"
+                            "Sige lang, si Jockie muna... 🥺\n\nSanay naman akong hindi piliin, pero sana sa susunod, ako naman. HAHAHA 😭💗\n\nTry `e!p song` kapag gusto mo na akong bigyan ng chance. ♡"
                         );
                     try {
                         await targetChannel.send({ embeds: [embed] });

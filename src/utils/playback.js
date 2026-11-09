@@ -142,7 +142,14 @@ async function replyAlreadyInUse(interaction, channel) {
     }
 }
 
-async function ensurePlayer(client, { guildId, voiceChannelId, textChannelId, volume = 75, requesterId = null }) {
+async function ensurePlayer(client, {
+    guildId,
+    voiceChannelId,
+    textChannelId,
+    volume = 75,
+    requesterId = null,
+    restoringSession = false,
+}) {
     const coordinator = require("./mongoCoordinator");
     const { installPlayerPersistence } = require("./playbackRecovery");
 
@@ -154,6 +161,7 @@ async function ensurePlayer(client, { guildId, voiceChannelId, textChannelId, vo
 
     let player = client.riffy.players.get(guildId);
     if (player) {
+        if (restoringSession) player._restoringSession = true;
         player.volume = volume;
         if (textChannelId) {
             player.textChannel = textChannelId;
@@ -194,6 +202,7 @@ async function ensurePlayer(client, { guildId, voiceChannelId, textChannelId, vo
         textChannel: textChannelId,
         deaf: true,
     });
+    if (restoringSession) player._restoringSession = true;
     player.volume = volume;
     if (textChannelId) {
         player.assignedTextChannel = textChannelId;

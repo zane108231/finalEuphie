@@ -11,17 +11,14 @@ const { startIfIdle, ensurePlayer, setAnnounceChannel, getOccupiedVoiceChannel, 
 const coordinator = require("../utils/mongoCoordinator");
 const { getPrefix } = require("../utils/prefixStore");
 const {
-    searchYoutubeTrack,
     getSpotifyTrackDisplayName,
     setTrackDisplayMetadata,
     findSpotifyTrackMetadata,
     applySpotifyTrackMetadata,
+    resolveSpotifyTrackAudio,
 } = require("../utils/search");
 const config = require("../../config");
-const {
-    findExactSpotifyTrack,
-    getSpotifyPlaylistMetadata,
-} = require("../utils/spotifyPlaylistSearch");
+const { getSpotifyPlaylistMetadata } = require("../utils/spotifyPlaylistSearch");
 
 // mm:ss, zero padded (03:07)
 function fmt(ms) {
@@ -29,15 +26,6 @@ function fmt(ms) {
     const m = Math.floor(total / 60);
     const s = total % 60;
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
-function shuffleArray(arr) {
-    const copy = [...arr];
-    for (let i = copy.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [copy[i], copy[j]] = [copy[j], copy[i]];
-    }
-    return copy;
 }
 
 // Find album art on a track, trying every place a Lavalink/Riffy track can store it
@@ -248,31 +236,6 @@ function buildAddedPlaylistEmbed(
     return embed;
 }
 
-async function resolveSpotifyTrackAudio(riffy, track, requester) {
-    if (String(track?.info?.sourceName || "").toLowerCase() !== "spotify") {
-        return track;
-    }
-
-    try {
-        const youtubeTrack = await searchYoutubeTrack(riffy, track, requester);
-        if (!youtubeTrack) {
-            console.warn(
-                `[euphire] No matching YouTube video found for Spotify track "${track.info.title}" by "${track.info.author}"`
-            );
-            return null;
-        }
-
-        track.track = youtubeTrack.track;
-        return track;
-    } catch (error) {
-        console.error(
-            `[euphire] YouTube search failed for Spotify track "${track?.info?.title || "Unknown"}":`,
-            error.message
-        );
-        return null;
-    }
-}
-
 async function resolveSpotifyTracksAudio(riffy, tracks, requester, onBatch) {
     for (let offset = 0; offset < tracks.length; offset += 4) {
         const batch = await Promise.all(
@@ -314,6 +277,7 @@ async function resolveInitialPlaylistTracks(riffy, tracks, requester) {
 module.exports = {
     aliases: ["p"],
     resolveInitialPlaylistTracks,
+    resolveSpotifyTrackAudio,
     data: new SlashCommandBuilder()
         .setName("play")
         .setDescription("Play a song or add it to the queue")
@@ -467,24 +431,10 @@ module.exports = {
             const isSpotifyUrl =
                 /^https?:\/\/(?:www\.)?open\.spotify\.com\//i.test(trimmedQuery);
             const isUrl = /^https?:\/\//i.test(trimmedQuery);
-            let searchQuery = trimmedQuery;
-            if (/^\d+$/.test(trimmedQuery)) {
-                try {
-                    const spotifyTrack =
-                        await findExactSpotifyTrack(trimmedQuery);
-                    if (spotifyTrack) {
-                        searchQuery = `${spotifyTrack.name} ${spotifyTrack.artist} Lyrics`;
-                    }
-                } catch (error) {
-                    console.warn(
-                        `[euphire] Could not use Spotify to disambiguate numeric search "${trimmedQuery}":`,
-                        error.message
-                    );
-                }
-            }
             const result = await client.riffy.resolve({
-                query: searchQuery,
-                source: isSpotifyUrl ? "spsearch" : "ytsearch",
+                query: trimmedQuery,
+                source: isUrl && !isSpotifyUrl ? "ytsearch" : "spsearch",
+                strictSource: !isUrl,
                 requester: interaction.user,
             });
 
@@ -505,9 +455,7 @@ module.exports = {
 
                 const wasIdle = !player.playing && !player.paused;
                 const startIndex = player.queue.length;
-                const orderedTracks = guildData.shuffle
-                    ? shuffleArray(tracks)
-                    : tracks;
+                const orderedTracks = tracks;
                 const initialPlaylistBatch =
                     await resolveInitialPlaylistTracks(
                         client.riffy,
@@ -726,8 +674,8 @@ module.exports = {
 
                 await startIfIdle(player);
 
-                // Only send a message if adding to existing queue, not when starting playback
-                if (!shouldStart) {
+                // Search selections replace their result list even when playback starts immediately.
+                if (!shouldStart || interaction.replacePlaylistSearchMessage) {
                     const queueLength = player.queue.length; // includes the track just added
 
                     // Remaining time of current song + every queued song before the new one

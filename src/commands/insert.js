@@ -2,7 +2,7 @@ const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js"
 const { getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
 const { createNoBotInVoiceEmbed } = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
-const { searchYoutubeTrack } = require("../utils/search");
+const { searchYoutubeTrack, resolveSpotifyTrackAudio } = require("../utils/search");
 const { getSpotifyPlaylistMetadata } = require("../utils/spotifyPlaylistSearch");
 const {
     getSpotifyTrackDisplayName,
@@ -105,6 +105,7 @@ module.exports = {
             const result = await targetRiffy.resolve({
                 query: query.trim(),
                 source: "spsearch",
+                strictSource: !/^https?:\/\//i.test(query.trim()),
                 requester: interaction.user,
             });
 
@@ -280,7 +281,18 @@ module.exports = {
                 loadType === "SEARCH_RESULT" ||
                 loadType === "TRACK_LOADED"
             ) {
-                const track = tracks[0];
+                let track = tracks[0];
+                if (!track) {
+                    return interaction.editReply({
+                        embeds: [buildSearchErrorEmbed()],
+                    });
+                }
+
+                track = await resolveSpotifyTrackAudio(
+                    targetRiffy,
+                    track,
+                    interaction.user
+                );
                 if (!track) {
                     return interaction.editReply({
                         embeds: [buildSearchErrorEmbed()],

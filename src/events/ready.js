@@ -52,6 +52,8 @@ module.exports = {
                     require("../commands/cleanprofile").data.toJSON(),
                     require("../commands/resetstats").data.toJSON(),
                     require("../commands/clearglobalstats").data.toJSON(),
+                    require("../commands/viewuserprofile").data.toJSON(),
+                    require("../commands/profileaudit").data.toJSON(),
                     require("../commands/modelprofile").data.toJSON(),
                     require("../commands/developerprofile").data.toJSON(),
                     ...require("../commands/model").commands.map((command) => command.data.toJSON()),

@@ -17,6 +17,11 @@ const config = require("../../config");
  * Handle all button and select menu interactions from the player container
  */
 async function handleButtonInteraction(client, interaction) {
+    if (interaction.customId?.startsWith("profileaudit:")) {
+        await require("../commands/profileaudit").handleButton(interaction);
+        return;
+    }
+
     if (interaction.customId?.startsWith("clearglobalstats:")) {
         await require("../commands/clearglobalstats").handleButton(interaction);
         return;
@@ -46,12 +51,23 @@ async function handleButtonInteraction(client, interaction) {
 
     if (
         interaction.customId?.startsWith("playlist_search_page:") ||
-        interaction.customId?.startsWith("playlist_search_select:")
+        interaction.customId?.startsWith("playlist_search_select:") ||
+        interaction.customId?.startsWith("spotify_search_page:") ||
+        interaction.customId?.startsWith("spotify_search_select:") ||
+        interaction.customId?.startsWith("spotify_album_page:") ||
+        interaction.customId?.startsWith("spotify_album_select:")
     ) {
-        await require("../commands/playlistsearch").handleInteraction(
-            interaction,
-            client
-        );
+        if (interaction.customId.startsWith("playlist_search_")) {
+            await require("../commands/playlistsearch").handleInteraction(
+                interaction,
+                client
+            );
+        } else {
+            await require("../utils/spotifyCatalogSelection").handleInteraction(
+                interaction,
+                client
+            );
+        }
         return;
     }
 
@@ -559,7 +575,6 @@ async function handleButtonInteraction(client, interaction) {
         case "shuffle": {
             if (player.queue.length > 0) {
                 player.queue.shuffle();
-                guildData.shuffle = true;
             }
             needsVisualUpdate = true;
             break;

@@ -33,7 +33,7 @@ const prefixFallbackPattern = new RegExp(
  */
 const MUSIC_COMMANDS = new Set([
     "play", "p",
-    "radio", "search", "playqueue", "playrecent", "playlistselect",
+    "radio", "search", "playleave", "playrecent", "playlistselect",
     "playingsingle", "albumsearch", "playlistsearch",
     "skip", "s", "next",
     "pause",

@@ -11,25 +11,13 @@ module.exports = {
         const player = await requireMusicAction(interaction, client, "clear");
         if (!player) return;
 
-        const queueLength = player.queue?.length || 0;
-        
-        if (queueLength === 0) {
-            return interaction.reply({
-                content: "❌ The queue is already empty.",
-                flags: MessageFlags.Ephemeral,
-            });
-        }
-
         player.queue.clear();
 
         const container = new ContainerBuilder();
+        container.setAccentColor(0x00ff00);
         container.addTextDisplayComponents(
             new TextDisplayBuilder().setContent(
-                "### 🗑️ Queue Cleared\n\n" +
-                "**Removed**\n" +
-                `-# ${queueLength} track${queueLength === 1 ? "" : "s"} removed from queue\n\n` +
-                "**Now Playing**\n" +
-                `-# ${player.current?.info?.title || "Nothing"}`
+                "The queue has been cleared"
             )
         );
 

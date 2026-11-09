@@ -3,8 +3,8 @@ const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const coordinator = require("../utils/mongoCoordinator");
 
 module.exports = createPlaybackFeature({
-    name: "playqueue",
-    description: "Queue a track and leave after the queue finishes",
+    name: "playleave",
+    description: "Play a track and leave when the queue finishes",
     async afterPlay(interaction, client) {
         const guildId = interaction.guild?.id;
         if (!guildId) return;

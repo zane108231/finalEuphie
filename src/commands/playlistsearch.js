@@ -10,7 +10,10 @@ const {
 } = require("discord.js");
 const { randomUUID } = require("crypto");
 const { getDB } = require("../utils/database");
-const { searchSpotifyPlaylists } = require("../utils/spotifyPlaylistSearch");
+const {
+    getSpotifyPlaylistId,
+    searchSpotifyPlaylists,
+} = require("../utils/spotifyPlaylistSearch");
 const config = require("../../config");
 
 const PAGE_SIZE = 10;
@@ -204,7 +207,7 @@ module.exports = {
         .addStringOption((option) =>
             option
                 .setName("query")
-                .setDescription("Playlist search term")
+                .setDescription("Playlist name or Spotify playlist URL")
                 .setRequired(true)
         ),
 
@@ -212,15 +215,9 @@ module.exports = {
         const query =
             interaction.options?.getString("query") ||
             interaction.args?.join(" ").trim();
-        if (!query) {
-            return interaction.reply({
-                content: "Usage: `e!playlistsearch <search term>`",
-                flags: MessageFlags.Ephemeral,
-            });
-        }
-
-        if (/^https?:\/\//i.test(query)) {
-            interaction.queryOverride = query;
+        const playlistId = getSpotifyPlaylistId(query || "");
+        if (playlistId) {
+            interaction.queryOverride = `https://open.spotify.com/playlist/${playlistId}`;
             try {
                 return await require("./play").execute(interaction, client);
             } finally {
@@ -228,12 +225,23 @@ module.exports = {
             }
         }
 
+        if (!query) {
+            return interaction.reply({
+                content:
+                    "Usage: `e!playlistsearch <playlist name or Spotify playlist URL>`",
+                flags: MessageFlags.Ephemeral,
+            });
+        }
+
         if (!interaction.deferred && !interaction.replied) {
             await interaction.deferReply();
         }
 
         try {
-            const playlists = await searchSpotifyPlaylists(query, SEARCH_LIMIT);
+            const playlists = await searchSpotifyPlaylists(
+                query,
+                SEARCH_LIMIT
+            );
             if (!playlists.length) {
                 return interaction.editReply({
                     content: `No Spotify playlists found for **${query}**.`,
@@ -252,15 +260,14 @@ module.exports = {
                 expiresAt: new Date(Date.now() + SEARCH_TTL_MS),
             };
             await getDB().collection("playlistSelections").insertOne(search);
-
             return interaction.editReply(buildPlaylistSearchPayload(search));
         } catch (error) {
             console.error("[euphire] Spotify playlist search failed:", error);
-            const message =
-                error.code === "SPOTIFY_CREDENTIALS_MISSING"
-                    ? "Spotify playlist search is not configured. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in the bot environment."
-                    : "Spotify playlist search is temporarily unavailable. Please try again later.";
-            return interaction.editReply({ content: message, components: [] });
+            return interaction.editReply({
+                content:
+                    "Spotify playlist search is temporarily unavailable. Please try again later.",
+                components: [],
+            });
         }
     },
 

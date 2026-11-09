@@ -7,7 +7,7 @@ const coordinator = require("../utils/mongoCoordinator");
  */
 const MUSIC_COMMANDS = new Set([
     "play", "skip", "pause", "resume", "stop", "leave", "dc", "join", "summon", "queue", "nowplaying",
-    "radio", "search", "playqueue", "playrecent", "playlistselect", "playingsingle", "albumsearch", "playlistsearch",
+    "radio", "search", "playleave", "playrecent", "playlistselect", "playingsingle", "albumsearch", "playlistsearch",
     "loop", "loopq", "repeat", "shuffle", "volume", "seek", "autoplay",
     "clear", "move", "remove", "insert", "lyrics",
     "forward", "backward", "end-time", "start-time", "skip-to",

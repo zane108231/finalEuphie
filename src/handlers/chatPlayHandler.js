@@ -110,6 +110,7 @@ async function handleChatPlayMessage(client, message) {
         const result = await client.riffy.resolve({
             query: query.trim(),
             source: "spsearch",
+            strictSource: true,
             requester: message.author,
         });
 
@@ -143,9 +144,22 @@ async function handleChatPlayMessage(client, message) {
             loadType === "SEARCH_RESULT" ||
             loadType === "TRACK_LOADED"
         ) {
-            const track = tracks[0];
+            let track = tracks[0];
             if (!track) {
                 await sendChatPlayFeedback(message.channel, "❌ No results found for that search.");
+                return true;
+            }
+
+            track = await require("../utils/search").resolveSpotifyTrackAudio(
+                client.riffy,
+                track,
+                message.author
+            );
+            if (!track) {
+                await sendChatPlayFeedback(
+                    message.channel,
+                    "❌ Spotify found the track, but no matching playable audio was found."
+                );
                 return true;
             }
             
