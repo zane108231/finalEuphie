@@ -105,7 +105,6 @@ module.exports = {
             const result = await targetRiffy.resolve({
                 query: query.trim(),
                 source: "spsearch",
-                strictSource: !/^https?:\/\//i.test(query.trim()),
                 requester: interaction.user,
             });
 

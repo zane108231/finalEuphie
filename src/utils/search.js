@@ -1,4 +1,5 @@
 const { Track } = require("riffy/build/structures/Track");
+const SEARCH_REQUEST_TIMEOUT_MS = 10000;
 
 const SUCCESS_TYPES = new Set([
     "search",
@@ -99,6 +100,23 @@ function toResult(response, requester, node) {
         pluginInfo: response?.pluginInfo ?? {},
         tracks,
     };
+}
+
+async function makeSearchRequest(node, endpoint) {
+    let timeout;
+    try {
+        return await Promise.race([
+            node.rest.makeRequest("GET", endpoint),
+            new Promise((_, reject) => {
+                timeout = setTimeout(
+                    () => reject(new Error("Lavalink search timed out.")),
+                    SEARCH_REQUEST_TIMEOUT_MS
+                );
+            }),
+        ]);
+    } finally {
+        clearTimeout(timeout);
+    }
 }
 
 function buildIdentifiers(query, source, strictSource = false) {
@@ -241,8 +259,8 @@ async function resolveTracks(
     for (const identifier of identifiers) {
         try {
             riffy.emit("debug", `[euphire] Searching "${identifier}" on node "${requestNode.name}"`);
-            const response = await requestNode.rest.makeRequest(
-                "GET",
+            const response = await makeSearchRequest(
+                requestNode,
                 `/${requestNode.rest.version}/loadtracks?identifier=${encodeURIComponent(identifier)}`
             );
             lastResponse = response;
@@ -283,12 +301,19 @@ async function resolveTracks(
         }
     }
 
-    if (
-        rejectedSearchResults &&
-        /^(ytsearch|ytmsearch)$/i.test(source || riffy.defaultSearchPlatform)
-    ) {
+    if (rejectedSearchResults) {
         if (bestRelevantFallback) return bestRelevantFallback;
-        return toResult({ loadType: "empty", data: [] }, requester, requestNode);
+        if (
+            /^(ytsearch|ytmsearch)$/i.test(
+                source || riffy.defaultSearchPlatform
+            )
+        ) {
+            return toResult(
+                { loadType: "empty", data: [] },
+                requester,
+                requestNode
+            );
+        }
     }
 
     return toResult(lastResponse || { loadType: "empty", data: [] }, requester, requestNode);
@@ -316,8 +341,8 @@ async function searchYoutubeTrack(riffy, track, requester, node) {
     let bestFallbackScore = Number.NEGATIVE_INFINITY;
 
     for (const query of [...new Set(queries)]) {
-        const response = await requestNode.rest.makeRequest(
-            "GET",
+        const response = await makeSearchRequest(
+            requestNode,
             `/${requestNode.rest.version}/loadtracks?identifier=${encodeURIComponent(`ytsearch:${query}`)}`
         );
         const result = toResult(response, requester, requestNode);

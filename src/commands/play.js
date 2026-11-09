@@ -434,7 +434,6 @@ module.exports = {
             const result = await client.riffy.resolve({
                 query: trimmedQuery,
                 source: isUrl && !isSpotifyUrl ? "ytsearch" : "spsearch",
-                strictSource: !isUrl,
                 requester: interaction.user,
             });
 
