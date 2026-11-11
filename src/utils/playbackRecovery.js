@@ -1,4 +1,4 @@
-const { EmbedBuilder } = require("discord.js");
+const { EmbedBuilder, PermissionFlagsBits } = require("discord.js");
 const config = require("../../config");
 const { getDB } = require("./database");
 const { waitForNode } = require("./playback");
@@ -200,8 +200,36 @@ async function prepareSnapshot(client, snapshot) {
     if (!snapshot.voiceChannelId) {
         throw new Error("The saved session has no voice channel.");
     }
-    if (!client.guilds.cache.has(snapshot.guildId)) {
+    const guild = client.guilds.cache.get(snapshot.guildId);
+    if (!guild) {
         throw new Error("The saved guild is not available to this bot.");
+    }
+
+    let voiceChannel;
+    try {
+        voiceChannel = await guild.channels.fetch(snapshot.voiceChannelId);
+    } catch (error) {
+        throw new Error(
+            `Cannot access saved voice channel ${snapshot.voiceChannelId} in guild ${snapshot.guildId}: ${error.message}`
+        );
+    }
+    if (!voiceChannel?.isVoiceBased?.()) {
+        throw new Error(
+            `Saved channel ${snapshot.voiceChannelId} is missing or is no longer a voice channel.`
+        );
+    }
+
+    const botMember = await guild.members.fetchMe();
+    const voicePermissions = voiceChannel.permissionsFor(botMember);
+    if (
+        !voicePermissions?.has([
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.Connect,
+        ])
+    ) {
+        throw new Error(
+            `The bot lacks View Channel or Connect permission for saved voice channel ${snapshot.voiceChannelId}.`
+        );
     }
 
     const existingPlayer = client.riffy?.players?.get(snapshot.guildId);
@@ -325,7 +353,7 @@ async function sendResumePrompt(client, snapshot) {
         : null;
     if (!channel && snapshot.textChannelId) {
         try {
-            channel = await client.channels.fetch(snapshot.textChannelId);
+            channel = await guild.channels.fetch(snapshot.textChannelId);
         } catch (error) {
             console.warn(
                 `[euphire] Could not fetch the saved session text channel for guild ${snapshot.guildId}:`,
@@ -348,11 +376,39 @@ async function sendResumePrompt(client, snapshot) {
             "Use `e!resumesession` when you’re ready to continue."
         );
 
-    await channel.send({
+    const payload = {
         embeds: [embed],
         allowedMentions: { users: [String(userId)] },
-    });
-    return true;
+    };
+
+    try {
+        await channel.send(payload);
+        return true;
+    } catch (error) {
+        console.warn(
+            `[euphire] Could not send the resume prompt to text channel ${channel.id} in guild ${snapshot.guildId}:`,
+            error.message
+        );
+    }
+
+    const fallbackChannel = guild.systemChannel;
+    if (!fallbackChannel?.send || fallbackChannel.id === channel.id) {
+        console.warn(
+            `[euphire] No alternate sendable text channel is available for the resume prompt in guild ${snapshot.guildId}.`
+        );
+        return false;
+    }
+
+    try {
+        await fallbackChannel.send(payload);
+        return true;
+    } catch (error) {
+        console.error(
+            `[euphire] Could not send the resume prompt to system channel ${fallbackChannel.id} in guild ${snapshot.guildId}:`,
+            error.message
+        );
+        return false;
+    }
 }
 
 async function restoreClientSessions(client) {
@@ -365,20 +421,29 @@ async function restoreClientSessions(client) {
     for (const snapshot of snapshots) {
         try {
             await prepareSnapshot(client, snapshot);
-            if (!client._resumePromptedGuilds) {
-                client._resumePromptedGuilds = new Set();
-            }
-            if (!client._resumePromptedGuilds.has(snapshot.guildId)) {
+        } catch (err) {
+            console.error(
+                `[euphire] Could not restore saved session for guild ${snapshot.guildId}:`,
+                err.message
+            );
+            continue;
+        }
+
+        if (!client._resumePromptedGuilds) {
+            client._resumePromptedGuilds = new Set();
+        }
+        if (!client._resumePromptedGuilds.has(snapshot.guildId)) {
+            try {
                 const sent = await sendResumePrompt(client, snapshot);
                 if (sent) {
                     client._resumePromptedGuilds.add(snapshot.guildId);
                 }
+            } catch (err) {
+                console.error(
+                    `[euphire] Saved session restored, but the resume prompt failed for guild ${snapshot.guildId}:`,
+                    err.message
+                );
             }
-        } catch (err) {
-            console.error(
-                `[euphire] Could not prepare saved session for guild ${snapshot.guildId}:`,
-                err.message
-            );
         }
     }
 }

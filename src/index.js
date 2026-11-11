@@ -3,7 +3,12 @@ require("dotenv").config({
 });
 
 const http = require("http");
-const { Client, GatewayIntentBits, GatewayDispatchEvents } = require("discord.js");
+const {
+    Client,
+    Events,
+    GatewayIntentBits,
+    GatewayDispatchEvents,
+} = require("discord.js");
 const { Riffy } = require("riffy");
 const fs = require("fs");
 const path = require("path");
@@ -337,7 +342,7 @@ if (missingTokens.length > 0) {
                     continue;
                 }
 
-                client.on("ready", () => {
+                client.once(Events.ClientReady, () => {
                     console.log(
                         `[euphire] ${botConfig.name} connected successfully (${botId})`
                     );
@@ -346,6 +351,9 @@ if (missingTokens.length > 0) {
                     coordinator.markBotReconnected(botId);
 
                     const playbackRecovery = require("./utils/playbackRecovery");
+                    console.log(
+                        `[euphire] Restoring saved playback sessions for ${botId}`
+                    );
                     playbackRecovery
                         .restoreClientSessions(client)
                         .catch((err) => {
