@@ -1,5 +1,11 @@
 const CONTEXT_TTL_MS = 2 * 60 * 1000;
 const contexts = new Map();
+const JOCKIE_BOT_IDS = new Set([
+    "411916947773587456",
+    "412347257233604609",
+    "412347553141751808",
+    "412347780841865216",
+]);
 
 function contextKey(guildId, voiceChannelId) {
     return `${guildId}:${voiceChannelId}`;
@@ -22,4 +28,8 @@ function consumeJockieCommand(guildId, voiceChannelId) {
     return context;
 }
 
-module.exports = { rememberJockieCommand, consumeJockieCommand };
+module.exports = {
+    JOCKIE_BOT_IDS,
+    rememberJockieCommand,
+    consumeJockieCommand,
+};

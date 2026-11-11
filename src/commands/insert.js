@@ -11,7 +11,7 @@ const {
     applySpotifyTrackMetadata,
 } = require("../utils/search");
 
-const SPOTIFY_ICON_URL = "https://cdn.discordapp.com/emojis/1561285569068273674.png";
+const SPOTIFY_ICON_URL = "https://cdn.discordapp.com/emojis/1570011075167002674.png";
 
 function formatDurationLeadingZero(ms) {
     if (!ms || isNaN(ms)) return "00:00";

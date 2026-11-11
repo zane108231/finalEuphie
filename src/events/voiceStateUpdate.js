@@ -3,14 +3,11 @@ const { createChatPlayIdleContainer } = require("../utils/components");
 const { EmbedBuilder, MessageFlags } = require("discord.js");
 const { addSessionParticipant, removeSessionParticipant } = require("../utils/mongoStats");
 const coordinator = require("../utils/mongoCoordinator");
-const { consumeJockieCommand } = require("../utils/jockieJoinContext");
+const {
+    JOCKIE_BOT_IDS,
+    consumeJockieCommand,
+} = require("../utils/jockieJoinContext");
 const recentDisconnectNotices = new Set();
-const JOCKIE_BOT_IDS = new Set([
-    "411916947773587456",
-    "412347257233604609",
-    "412347553141751808",
-    "412347780841865216",
-]);
 const recentJockieJoinNotices = new Set();
 
 module.exports = {
@@ -92,7 +89,7 @@ module.exports = {
                     const embed = new EmbedBuilder()
                         .setColor(0xf4a7c7)
                         .setDescription(
-                            "Sige lang, si Jockie muna... 🥺\n\nSanay naman akong hindi piliin, pero sana sa susunod, ako naman. HAHAHA 😭💗\n\nTry `e!p song` kapag gusto mo na akong bigyan ng chance. ♡"
+                            "Sige lang, si Jockie muna. 🥺\n\nKapag gusto mo naman akong subukan, gamitin mo lang ang `e!join`."
                         );
                     try {
                         await targetChannel.send({ embeds: [embed] });

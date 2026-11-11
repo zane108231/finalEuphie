@@ -39,16 +39,16 @@ function safeArtworkUrl(track) {
 }
 
 const SPOTIFY_EMOJIS = {
-    euphie_main: "1561285569068273674",
-    euphie_1: "1561287030703661126",
-    euphie_2: "1561287096084336690",
-    euphie_3: "1561287176879087696",
+    euphie_main: "1570011075167002674",
+    euphie_1: "1570011075167002674",
+    euphie_2: "1570011075167002674",
+    euphie_3: "1570011075167002674",
 };
 
 const BOT_USER_IDS = {
-    "1561215064613068810": "1561285569068273674", // Euphie
-    "1561221189970567380": "1561287030703661126", // Euphie (1)
-    "1561215584358895758": "1561287096084336690", // Euphie (2)
+    "1561215064613068810": "1570011075167002674", // Euphie
+    "1561221189970567380": "1570011075167002674", // Euphie (1)
+    "1561215584358895758": "1570011075167002674", // Euphie (2)
 };
 
 function getSpotifyEmoji(client = null, player = null) {
@@ -86,7 +86,7 @@ function getSpotifyEmoji(client = null, player = null) {
     }
 
     // Default to Euphie Main
-    return "<:spotify:1561285569068273674>";
+    return "<:spotify:1570011075167002674>";
 }
 
 /**

@@ -86,7 +86,7 @@ async function handleSetBackground(interaction, client, args) {
                 "Set your profile background, this can be set to\n" +
                 "`avatar`, which is an image of the bot's avatar\n" +
                 "`color`, which is a plain background with your set color\n" +
-                "`default`, which resets to the original background\n\n" +
+                "`default`, which resets to the default music background\n\n" +
                 "It can also be set to a custom background by providing an image URL or uploading an image attachment.\n\n" +
                 "**Usage**\n" +
                 "```\ne!profile set background <background>\n```\n\n" +
@@ -115,7 +115,7 @@ async function handleSetBackground(interaction, client, args) {
         await saveUserData(interaction.user.id, userSettings);
         const embed = new EmbedBuilder()
             .setColor(config.accentColor || 0x2b2d31)
-            .setDescription("✅ Profile background reset to **default** (with cat watermark). Use `e!profile` to view your card.");
+            .setDescription("✅ Profile background reset to the **default music background**. Use `e!profile` to view your card.");
         return interaction.reply({ embeds: [embed] });
     }
 

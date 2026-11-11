@@ -56,6 +56,7 @@ module.exports = {
                     require("../commands/profileaudit").data.toJSON(),
                     require("../commands/modelprofile").data.toJSON(),
                     require("../commands/developerprofile").data.toJSON(),
+                    require("../commands/testjockie").data.toJSON(),
                     ...require("../commands/model").commands.map((command) => command.data.toJSON()),
                 ]
                 : [];
@@ -68,7 +69,7 @@ module.exports = {
             }
             console.log(
                 commands.length
-                    ? "[euphire] Registered the profile, announcement, cleanup, reset-stats, global-stats, and model commands; cleared server-specific commands."
+                    ? "[euphire] Registered the profile, announcement, cleanup, reset-stats, global-stats, Jockie test, and model commands; cleared server-specific commands."
                     : "[euphire] Cleared global and server-specific slash commands for this secondary bot."
             );
         } catch (error) {

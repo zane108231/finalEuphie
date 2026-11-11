@@ -37,8 +37,12 @@ async function executeSkipTrack(interaction, player, isVoteSkip = false) {
     } else if (player.queue?.length) {
         await startIfIdle(player);
     } else {
+        const embed = new EmbedBuilder()
+            .setColor(0xED4245)
+            .setDescription("There is no track playing");
+
         return interaction.reply({
-            content: "❌ Nothing is playing and the queue is empty.",
+            embeds: [embed],
             flags: MessageFlags.Ephemeral,
         });
     }
@@ -109,6 +113,17 @@ module.exports = {
         if (!canControlMusic(interaction.member, player)) {
             return interaction.reply({
                 content: VOICE_CHANNEL_DENIAL,
+                flags: MessageFlags.Ephemeral,
+            });
+        }
+
+        if (!player.current && !player.playing && !player.paused && (!player.queue || player.queue.length === 0)) {
+            const embed = new EmbedBuilder()
+                .setColor(0xED4245)
+                .setDescription("There is no track playing");
+
+            return interaction.reply({
+                embeds: [embed],
                 flags: MessageFlags.Ephemeral,
             });
         }

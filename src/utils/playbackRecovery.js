@@ -1,3 +1,5 @@
+const { EmbedBuilder } = require("discord.js");
+const config = require("../../config");
 const { getDB } = require("./database");
 const { waitForNode } = require("./playback");
 const coordinator = require("./mongoCoordinator");
@@ -339,10 +341,15 @@ async function sendResumePrompt(client, snapshot) {
         return false;
     }
 
-    await channel.send({
-        content:
+    const embed = new EmbedBuilder()
+        .setColor(config.accentColor || 0x2b2d31)
+        .setDescription(
             `<@${userId}> I’m back in your voice channel with your saved music session ready. ` +
-            "Use `e!resumesession` when you’re ready to continue.",
+            "Use `e!resumesession` when you’re ready to continue."
+        );
+
+    await channel.send({
+        embeds: [embed],
         allowedMentions: { users: [String(userId)] },
     });
     return true;

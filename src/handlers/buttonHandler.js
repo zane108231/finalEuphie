@@ -34,8 +34,17 @@ async function handleButtonInteraction(client, interaction) {
         return;
     }
 
-    // Handle Last.fm verification
-    if (interaction.customId === 'lastfm_verify') {
+    // Handle private Last.fm authorization and verification
+    if (
+        interaction.customId === "lastfm_begin_login" ||
+        interaction.customId === "lastfm_retry"
+    ) {
+        const loginCommand = require("../commands/login");
+        await loginCommand.handleStart(interaction);
+        return;
+    }
+
+    if (interaction.customId === "lastfm_verify") {
         const loginCommand = require('../commands/login');
         await loginCommand.handleVerify(interaction);
         return;

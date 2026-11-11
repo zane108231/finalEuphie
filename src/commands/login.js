@@ -1,9 +1,109 @@
-const { SlashCommandBuilder, MessageFlags, ContainerBuilder, TextDisplayBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const { SlashCommandBuilder, MessageFlags, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 const { getUserData, saveUserData } = require("../utils/mongoUserData");
 const { getAuthToken, getAuthUrl, getSession } = require("../utils/lastfm");
 
 // Store pending auth tokens (in production, use Redis or database)
 const pendingAuth = new Map();
+const authExpiryTimers = new Map();
+const AUTH_TOKEN_TTL_MS = 6 * 60 * 1000;
+
+function createRetryRow() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId("lastfm_retry")
+            .setLabel("Try again")
+            .setStyle(ButtonStyle.Primary)
+    );
+}
+
+function createAuthErrorReply() {
+    const embed = new EmbedBuilder()
+        .setColor(0xf5a623)
+        .setDescription(
+            "Login expired or failed. Use the button below to try again.\n\n" +
+            "Still having trouble connecting your Last.fm to Euphie? Feel free to ask for help on our support server."
+        );
+
+    return {
+        embeds: [embed],
+        components: [createRetryRow()],
+        flags: MessageFlags.Ephemeral,
+    };
+}
+
+async function createAuthToken(userId) {
+    const token = await getAuthToken();
+    if (!token) return null;
+
+    const timestamp = Date.now();
+    const userData = await getUserData(userId);
+    userData.lastfmToken = token;
+    userData.lastfmTokenTimestamp = timestamp;
+    await saveUserData(userId, userData);
+    pendingAuth.set(userId, { token, timestamp });
+
+    const previousTimer = authExpiryTimers.get(userId);
+    if (previousTimer) clearTimeout(previousTimer);
+
+    const timer = setTimeout(async () => {
+        try {
+            const currentData = await getUserData(userId);
+            if (currentData.lastfmToken === token) {
+                currentData.lastfmToken = null;
+                currentData.lastfmTokenTimestamp = null;
+                await saveUserData(userId, currentData);
+            }
+            if (pendingAuth.get(userId)?.token === token) {
+                pendingAuth.delete(userId);
+            }
+        } catch (error) {
+            console.error("[Last.fm] Failed to clear expired login token:", error.message);
+        } finally {
+            if (authExpiryTimers.get(userId) === timer) {
+                authExpiryTimers.delete(userId);
+            }
+        }
+    }, AUTH_TOKEN_TTL_MS);
+    timer.unref?.();
+    authExpiryTimers.set(userId, timer);
+
+    return token;
+}
+
+function createWelcomeEmbed(displayName) {
+    return new EmbedBuilder()
+        .setColor(0xf5a623)
+        .setDescription(
+            `Hi ${displayName}, welcome to Euphie.\n` +
+            "To use Euphie's Last.fm features, first connect your Last.fm account.\n\n" +
+            "Use the button below to connect your existing Last.fm account."
+        );
+}
+
+function createAuthReply(token) {
+    const embed = new EmbedBuilder()
+        .setColor(0xf5a623)
+        .setDescription(
+            "Authorize Euphie on Last.fm, then click **Verify** to complete setup.\n\n" +
+            "-# This link expires in 6 minutes."
+        );
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setLabel("Connect Last.fm account")
+            .setStyle(ButtonStyle.Link)
+            .setURL(getAuthUrl(token)),
+        new ButtonBuilder()
+            .setCustomId("lastfm_verify")
+            .setLabel("Verify")
+            .setStyle(ButtonStyle.Primary)
+    );
+
+    return {
+        embeds: [embed],
+        components: [row],
+        flags: MessageFlags.Ephemeral,
+    };
+}
 
 module.exports = {
     aliases: [],
@@ -18,125 +118,40 @@ module.exports = {
         // Check if already logged in
         const userData = await getUserData(userId);
         if (userData.lastfmSessionKey) {
-            const container = new ContainerBuilder();
-            container.addTextDisplayComponents(
-                new TextDisplayBuilder().setContent(
-                    "### ⚠️ Already Logged In\n\n" +
-                    "**Status**\n" +
-                    `-# You are already authenticated as **${userData.lastfmUsername}**\n\n` +
-                    "**Want to log out?**\n" +
-                    "-# Use e!logout to disconnect your Last.fm account."
-                )
-            );
-
-            if (isPrefix && interaction.guild) {
-                try {
-                    await interaction.user.send({
-                        components: [container],
-                        flags: MessageFlags.IsComponentsV2,
-                    });
-                    const msg = await interaction.channel.send({
-                        content: `ℹ️ <@${userId}>, you are already logged in as **${userData.lastfmUsername}**! I sent your details via DM.`,
-                    });
-                    setTimeout(() => msg.delete().catch(() => {}), 10000);
-                    return;
-                } catch {
-                    return interaction.reply({
-                        components: [container],
-                        flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
-                    });
-                }
-            }
-
+            const embed = new EmbedBuilder()
+                .setColor(0x57f287)
+                .setDescription(
+                    `✅ You have already logged in to Euphie with the username **${userData.lastfmUsername}**.\n\n` +
+                    "Please note that Euphie is not affiliated with Last.fm."
+                );
             return interaction.reply({
-                components: [container],
-                flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+                embeds: [embed],
+                flags: isPrefix ? undefined : MessageFlags.Ephemeral,
             });
         }
 
-        // Get auth token
-        const token = await getAuthToken();
-        if (!token) {
-            return interaction.reply({
-                content: "❌ Failed to get Last.fm authentication token. Please check the API configuration.",
-                flags: MessageFlags.Ephemeral,
-            });
-        }
-
-        // Store token for this user (persist in userData for restarts)
-        userData.lastfmToken = token;
-        userData.lastfmTokenTimestamp = Date.now();
-        await saveUserData(userId, userData);
-
-        // Also store in memory for quick access
-        pendingAuth.set(userId, { token, timestamp: Date.now() });
-
-        // Generate auth URL
-        const authUrl = getAuthUrl(token);
-
-        const container = new ContainerBuilder();
-        container.addTextDisplayComponents(
-            new TextDisplayBuilder().setContent(
-                "### 🔐 Last.fm Authentication\n\n" +
-                "**Step 1**\n" +
-                "-# Click the button below to authorize Euphie on Last.fm\n\n" +
-                "**Step 2**\n" +
-                "-# After authorizing, click **Verify** to complete the login\n\n" +
-                "**Note**\n" +
-                "-# This link expires in 30 minutes"
-            )
-        );
-
-        const buttonRow = new ActionRowBuilder().addComponents(
+        const displayName =
+            interaction.member?.displayName || interaction.user.username;
+        const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
-                .setLabel("Authorize on Last.fm")
-                .setStyle(ButtonStyle.Link)
-                .setURL(authUrl),
-            new ButtonBuilder()
-                .setCustomId('lastfm_verify')
-                .setLabel('Verify')
+                .setCustomId("lastfm_begin_login")
+                .setLabel("Connect Last.fm account")
                 .setStyle(ButtonStyle.Primary)
         );
 
-        container.addActionRowComponents(buttonRow);
-
-        // If prefix command in a server channel, deliver via private DM!
-        if (isPrefix && interaction.guild) {
-            try {
-                if (interaction.message?.deletable) {
-                    await interaction.message.delete().catch(() => {});
-                }
-
-                await interaction.user.send({
-                    components: [container],
-                    flags: MessageFlags.IsComponentsV2,
-                });
-
-                const notice = await interaction.channel.send({
-                    content: `🔒 <@${userId}>, I have sent your private Last.fm authorization link to your **Direct Messages** so no one else can see or steal it!`,
-                });
-                setTimeout(() => notice.delete().catch(() => {}), 15000);
-                return;
-            } catch (dmErr) {
-                return interaction.reply({
-                    content: `⚠️ <@${userId}>, I couldn't send you a Direct Message! Please enable Direct Messages from server members so only you can see your login link, or use the slash command \`/login\` (which is natively private/ephemeral).`,
-                });
-            }
-        }
-
-        // Slash command ephemeral reply
-        await interaction.reply({
-            components: [container],
-            flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+        return interaction.reply({
+            embeds: [createWelcomeEmbed(displayName)],
+            components: [row],
+            flags: isPrefix ? undefined : MessageFlags.Ephemeral,
         });
+    },
 
-        // Clean up expired tokens after 30 minutes
-        setTimeout(() => {
-            pendingAuth.delete(userId);
-            userData.lastfmToken = null;
-            userData.lastfmTokenTimestamp = null;
-            saveUserData(userId, userData);
-        }, 30 * 60 * 1000);
+    async handleStart(interaction) {
+        const token = await createAuthToken(interaction.user.id);
+        if (!token) {
+            return interaction.reply(createAuthErrorReply());
+        }
+        return interaction.reply(createAuthReply(token));
     },
 
     async handleVerify(interaction) {
@@ -144,24 +159,28 @@ module.exports = {
 
         // Try to get token from memory first
         let authData = pendingAuth.get(userId);
+        if (authData && Date.now() - authData.timestamp >= AUTH_TOKEN_TTL_MS) {
+            pendingAuth.delete(userId);
+            authData = null;
+        }
 
         // If not in memory, try to get from userData (for restarts)
         if (!authData) {
             const userData = await getUserData(userId);
             if (userData.lastfmToken && userData.lastfmTokenTimestamp) {
-                // Check if token is still valid (30 minutes)
                 const tokenAge = Date.now() - userData.lastfmTokenTimestamp;
-                if (tokenAge < 30 * 60 * 1000) {
+                if (tokenAge < AUTH_TOKEN_TTL_MS) {
                     authData = { token: userData.lastfmToken, timestamp: userData.lastfmTokenTimestamp };
+                } else {
+                    userData.lastfmToken = null;
+                    userData.lastfmTokenTimestamp = null;
+                    await saveUserData(userId, userData);
                 }
             }
         }
 
         if (!authData) {
-            return interaction.reply({
-                content: "❌ Authentication expired or not found. Please run e!login again.",
-                flags: MessageFlags.Ephemeral,
-            });
+            return interaction.reply(createAuthErrorReply());
         }
 
         // Get session key
@@ -169,15 +188,19 @@ module.exports = {
         if (!session) {
             // Clear invalid token
             const userData = await getUserData(userId);
-            userData.lastfmToken = null;
-            userData.lastfmTokenTimestamp = null;
-            await saveUserData(userId, userData);
-            pendingAuth.delete(userId);
+            if (userData.lastfmToken === authData.token) {
+                userData.lastfmToken = null;
+                userData.lastfmTokenTimestamp = null;
+                await saveUserData(userId, userData);
+            }
+            if (pendingAuth.get(userId)?.token === authData.token) {
+                pendingAuth.delete(userId);
+            }
 
-            return interaction.reply({
-                content: "❌ Failed to get session. Did you authorize on Last.fm? Please try again.",
-                flags: MessageFlags.Ephemeral,
-            });
+            const timer = authExpiryTimers.get(userId);
+            if (timer) clearTimeout(timer);
+            authExpiryTimers.delete(userId);
+            return interaction.reply(createAuthErrorReply());
         }
 
         // Save session key
@@ -190,21 +213,20 @@ module.exports = {
 
         // Clean up
         pendingAuth.delete(userId);
-
-        const container = new ContainerBuilder();
-        container.addTextDisplayComponents(
-            new TextDisplayBuilder().setContent(
-                "### ✅ Successfully Logged In\n\n" +
-                "**Status**\n" +
-                `-# You are now authenticated as **${session.name}**\n\n` +
-                "**Scrobbling**\n" +
-                "-# Your tracks will now be scrobbled to Last.fm automatically!"
-            )
-        );
+        const timer = authExpiryTimers.get(userId);
+        if (timer) clearTimeout(timer);
+        authExpiryTimers.delete(userId);
+        const embed = new EmbedBuilder()
+            .setColor(0x57f287)
+            .setDescription(
+                `✅ You have been logged in to Euphie with the username **${session.name}**!\n\n` +
+                "Your tracks will now be scrobbled to Last.fm automatically.\n\n" +
+                "Please note that Euphie is not affiliated with Last.fm."
+            );
 
         await interaction.reply({
-            components: [container],
-            flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+            embeds: [embed],
+            flags: MessageFlags.Ephemeral,
         });
     }
 };

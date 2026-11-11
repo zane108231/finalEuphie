@@ -12,6 +12,7 @@ const BRAND_LABEL = 'EUPHIE';
 const WIDTH = 1024;
 const HEIGHT = 695;
 const FONT_DIR = path.join(__dirname, 'fonts');
+const DEFAULT_BACKGROUND_PATH = path.join(__dirname, '..', 'assets', 'profile-default-background.png');
 
 function registerFont(file, family) {
     const p = path.join(FONT_DIR, file);
@@ -37,11 +38,11 @@ const regular = n =>
 
 const C = {
     bg: '#eef1f2',
-    panel: 'rgba(190, 194, 197, 0.47)',
-    panelBorder: 'rgba(255,255,255,0.22)',
-    text: '#111318',
-    muted: '#45484b',
-    empty: '#202326',
+    panel: 'rgba(20, 22, 25, 0.88)',
+    panelBorder: 'rgba(255,255,255,0.35)',
+    text: '#f7f8fa',
+    muted: '#d9dde1',
+    empty: '#d9dde1',
     watermark: 'rgba(116, 122, 126, 0.30)',
     avatarRing: '#d9dcde',
     avatarFallback: '#000000',
@@ -511,7 +512,16 @@ async function drawBackground(ctx, backgroundOption = 'default', customColor = n
         }
     }
 
-    // 4. Default background (gradient + cat watermark)
+    // 4. Default music background
+    try {
+        const bgImg = await loadImage(DEFAULT_BACKGROUND_PATH);
+        drawCoverImage(ctx, bgImg, WIDTH, HEIGHT);
+        return;
+    } catch (err) {
+        console.error('[euphire] Failed to load default profile background:', err.message);
+    }
+
+    // Keep a simple fallback if the bundled background cannot be loaded.
     ctx.fillStyle = C.bg;
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
@@ -525,8 +535,6 @@ async function drawBackground(ctx, backgroundOption = 'default', customColor = n
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
-    // Watermark is drawn before the panels in default mode
-    drawWatermark(ctx);
 }
 
 // ============================================================
@@ -538,7 +546,7 @@ function drawBrand(ctx) {
 
     roundRect(ctx, x, y, w, h, r);
 
-    ctx.fillStyle = 'rgba(205,208,210,0.68)';
+    ctx.fillStyle = 'rgba(20,22,25,0.9)';
     ctx.fill();
 
     ctx.font = bold(20);
@@ -761,8 +769,13 @@ async function generateProfileCard(
     ctx.font = bold(fitText(ctx, name, 530, 38, 22));
     ctx.fillStyle = C.text;
     ctx.textBaseline = 'alphabetic';
-
+    ctx.shadowColor = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur = 5;
+    ctx.shadowOffsetY = 2;
     ctx.fillText(truncate(ctx, name, 530), 238, 120);
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
 
     // Spotify icon
     drawSpotify(ctx, 263, 166);

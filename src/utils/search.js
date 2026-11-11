@@ -230,6 +230,17 @@ function rankSearchTracks(tracks, query) {
         .map((candidate) => candidate.track);
 }
 
+function isOfficialLyricsVideo(title) {
+    const normalizedTitle = normalizeSearchText(title);
+    return /\bofficial\b.*\blyrics?\b|\blyrics?\b.*\bofficial\b/.test(
+        normalizedTitle
+    );
+}
+
+function isEligibleYoutubeLyricsTitle(title) {
+    return /\blyrics\b/.test(normalizeSearchText(title)) && !isOfficialLyricsVideo(title);
+}
+
 /**
  * Search Lavalink without Riffy's broken fallback that turns
  * "memories" into https://open.spotify.com/track/memories
@@ -254,7 +265,6 @@ async function resolveTracks(
 
     let lastResponse = null;
     let rejectedSearchResults = false;
-    let bestRelevantFallback = null;
 
     for (const identifier of identifiers) {
         try {
@@ -268,13 +278,18 @@ async function resolveTracks(
             if (SUCCESS_TYPES.has(response.loadType) && hasTracks(response)) {
                 const result = toResult(response, requester, requestNode);
                 if (/^(ytsearch|ytmsearch):/i.test(identifier)) {
-                    result.tracks = rankSearchTracks(result.tracks, identifier.replace(/^[^:]+:/, ""));
+                    result.tracks = rankSearchTracks(
+                        result.tracks.filter(
+                            (track) => !isOfficialLyricsVideo(track.info?.title)
+                        ),
+                        identifier.replace(/^[^:]+:/, "")
+                    );
                     if (!result.tracks.length) {
                         rejectedSearchResults = true;
                         continue;
                     }
                     const lyricResults = result.tracks.filter((track) =>
-                        /\b(lyrics?|with lyrics)\b/i.test(track.info?.title || "")
+                        isEligibleYoutubeLyricsTitle(track.info?.title)
                     );
                     if (lyricResults.length) {
                         result.tracks = lyricResults;
@@ -283,9 +298,6 @@ async function resolveTracks(
                             `[euphire] Search success for "${query}" via ${identifier}, lyric tracks: ${result.tracks.length}`
                         );
                         return result;
-                    }
-                    if (!bestRelevantFallback) {
-                        bestRelevantFallback = result;
                     }
                     rejectedSearchResults = true;
                     continue;
@@ -302,7 +314,6 @@ async function resolveTracks(
     }
 
     if (rejectedSearchResults) {
-        if (bestRelevantFallback) return bestRelevantFallback;
         if (
             /^(ytsearch|ytmsearch)$/i.test(
                 source || riffy.defaultSearchPlatform
@@ -337,8 +348,6 @@ async function searchYoutubeTrack(riffy, track, requester, node) {
     const artistWords = normalizeSearchText(author || "").split(" ").filter(Boolean);
     let bestLyricMatch = null;
     let bestLyricScore = Number.NEGATIVE_INFINITY;
-    let bestFallbackMatch = null;
-    let bestFallbackScore = Number.NEGATIVE_INFINITY;
 
     for (const query of [...new Set(queries)]) {
         const response = await makeSearchRequest(
@@ -365,34 +374,24 @@ async function searchYoutubeTrack(riffy, track, requester, node) {
                 continue;
             }
 
-            const isLyrics = /\b(lyrics?|with lyrics)\b/.test(candidateTitle);
+            if (!isEligibleYoutubeLyricsTitle(candidate.info?.title)) continue;
+
             const isOfficialAudio = /\bofficial audio\b/.test(candidateTitle);
 
             const score =
                 titleMatch * 10 +
                 artistMatch * 4 +
-                (isLyrics ? 8 : 0) -
                 (isOfficialAudio ? 4 : 0);
-            if (isLyrics && score > bestLyricScore) {
+            if (score > bestLyricScore) {
                 bestLyricMatch = candidate;
                 bestLyricScore = score;
-            } else if (!isLyrics && score > bestFallbackScore) {
-                bestFallbackMatch = candidate;
-                bestFallbackScore = score;
             }
         }
 
-        if (
-            bestLyricMatch &&
-            /\b(lyrics?|with lyrics)\b/.test(
-                normalizeSearchText(bestLyricMatch.info.title)
-            )
-        ) {
-            return bestLyricMatch;
-        }
+        if (bestLyricMatch) return bestLyricMatch;
     }
 
-    return bestLyricMatch || bestFallbackMatch;
+    return null;
 }
 
 async function resolveSpotifyTrackAudio(riffy, track, requester) {

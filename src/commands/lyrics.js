@@ -8,7 +8,7 @@ const {
     ButtonStyle,
     MessageFlags,
 } = require("discord.js");
-const { searchGenius, getLyrics, cleanSongTitle, splitLyricsIntoPages } = require("../utils/genius");
+const { searchLrclib, getLyrics, cleanSongTitle, splitLyricsIntoPages } = require("../utils/lrclib");
 const coordinator = require("../utils/mongoCoordinator");
 const config = require("../../config");
 
@@ -31,10 +31,10 @@ setInterval(() => {
             lyricsSessions.delete(id);
         }
     }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000).unref();
 
 /**
- * Build the selection UI strictly following the reference image:
+ * Build the selection UI strictly following the reference format:
  * Page 1/1
  *
  * 1. [Song Title by Artist](url)
@@ -51,12 +51,16 @@ function buildSelectionPayload(songs, searchId, page = 1, totalPages = 1) {
     songs.forEach((song, index) => {
         const num = index + 1;
         const fullTitle = song.fullTitle || `${song.title} by ${song.artist}`;
-        description += `${num}. [${fullTitle}](${song.url})\n`;
+        const linkUrl = song.url || "https://lrclib.net";
+        description += `${num}. [${fullTitle}](${linkUrl})\n`;
+
+        const titleLabel = `${num}. ${song.title}`.slice(0, 100);
+        const artistDesc = (song.artist || "Unknown Artist").slice(0, 100);
 
         selectOptions.push(
             new StringSelectMenuOptionBuilder()
-                .setLabel(`${num}. ${song.title}`.slice(0, 100))
-                .setDescription(`${song.artist}`.slice(0, 100))
+                .setLabel(titleLabel)
+                .setDescription(artistDesc)
                 .setValue(`${searchId}:${index}`)
         );
     });
@@ -87,9 +91,6 @@ function buildSelectionPayload(songs, searchId, page = 1, totalPages = 1) {
     };
 }
 
-/**
- * Build lyrics display embed and optional pagination buttons
- */
 function buildLyricsPagePayload(session, sessionId) {
     const { pages, song, currentPage } = session;
     const totalPages = pages.length;
@@ -97,16 +98,19 @@ function buildLyricsPagePayload(session, sessionId) {
     const embed = new EmbedBuilder()
         .setColor(config.accentColor || 0x2b2d31)
         .setTitle(`${song.title} — ${song.artist}`.slice(0, 256))
-        .setURL(song.url)
         .setDescription(pages[currentPage]);
 
-    if (song.thumbnail) {
+    if (song.url && typeof song.url === "string" && song.url.startsWith("http")) {
+        embed.setURL(song.url);
+    }
+
+    if (song.thumbnail && typeof song.thumbnail === "string" && song.thumbnail.startsWith("http")) {
         embed.setThumbnail(song.thumbnail);
     }
 
     if (totalPages > 1) {
         embed.setFooter({
-            text: `Page ${currentPage + 1}/${totalPages} • Powered by Genius`,
+            text: `Page ${currentPage + 1}/${totalPages} • Powered by LRCLIB`,
         });
 
         const prevButton = new ButtonBuilder()
@@ -135,28 +139,25 @@ function buildLyricsPagePayload(session, sessionId) {
         const row = new ActionRowBuilder().addComponents(prevButton, pageIndicator, nextButton, closeButton);
 
         return {
-            content: null,
+            content: "",
             embeds: [embed],
             components: [row],
         };
-    } else {
-        embed.setFooter({
-            text: `Euphie`,
-        });
-
-        return {
-            content: null,
-            embeds: [embed],
-            components: [],
-        };
     }
+
+    embed.setFooter({ text: "Euphie • Powered by LRCLIB" });
+    return {
+        content: "",
+        embeds: [embed],
+        components: [],
+    };
 }
 
 module.exports = {
     aliases: ["lyric", "ly"],
     data: new SlashCommandBuilder()
         .setName("lyrics")
-        .setDescription("Search and display song lyrics via Genius")
+        .setDescription("Search and display song lyrics via LRCLIB")
         .addStringOption((opt) =>
             opt.setName("query").setDescription("Song title or artist to search").setRequired(false)
         ),
@@ -213,7 +214,12 @@ module.exports = {
                         }
                     }
                 }
-                query = songTitle.trim();
+                const author = (currentTrack.info.author || "").trim();
+                if (author && !songTitle.toLowerCase().includes(author.toLowerCase())) {
+                    query = `${author} ${songTitle}`.trim();
+                } else {
+                    query = songTitle.trim();
+                }
             }
         }
 
@@ -228,18 +234,17 @@ module.exports = {
 
         let songs;
         try {
-            songs = await searchGenius(query);
+            songs = await searchLrclib(query);
         } catch (error) {
-            console.error("[Genius] Lyrics search failed:", error.message);
+            console.error("[LRCLIB] Lyrics search failed:", error.message);
             return interaction.editReply({
-                content:
-                    "❌ Genius blocked the lyrics search. Add a valid `GENIUS_API_KEY` to your `.env` file and restart the bot, then try again.",
+                content: "❌ Failed to search for lyrics on LRCLIB. Please try again later.",
             });
         }
 
         if (!songs || songs.length === 0) {
             return interaction.editReply({
-                content: `❌ No lyrics found on Genius for: **${query}**`,
+                content: `❌ No lyrics found for: **${query}**`,
             });
         }
 
@@ -252,7 +257,7 @@ module.exports = {
         });
 
         const payload = buildSelectionPayload(songs, searchId, 1, 1);
-        await interaction.editReply(payload);
+        return await interaction.editReply(payload);
     },
 
     /**
@@ -305,11 +310,21 @@ module.exports = {
                 components: [],
             });
 
-            const lyrics = await getLyrics(song.url);
+            let lyrics;
+            try {
+                lyrics = await getLyrics(song);
+            } catch (error) {
+                console.error(`[LRCLIB] Failed to fetch lyrics for "${song.fullTitle}":`, error);
+                return await interaction.editReply({
+                    content: `❌ Failed to fetch lyrics for **${song.fullTitle}**.`,
+                    embeds: [],
+                    components: [],
+                });
+            }
 
             if (!lyrics) {
                 return await interaction.editReply({
-                    content: `❌ Could not find or extract lyrics for **${song.fullTitle}**.\n[View on Genius](${song.url})`,
+                    content: `❌ Could not find lyrics for **${song.fullTitle}**.`,
                     embeds: [],
                     components: [],
                 });

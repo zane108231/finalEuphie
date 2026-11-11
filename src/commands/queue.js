@@ -7,6 +7,8 @@ const {
     ButtonBuilder,
     ButtonStyle,
     MessageFlags,
+    ContainerBuilder,
+    TextDisplayBuilder,
 } = require("discord.js");
 const { createNoBotInVoiceEmbed } = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
@@ -27,6 +29,19 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 const NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+
+function buildEmptyQueuePayload() {
+    const container = new ContainerBuilder()
+        .setAccentColor(0xed4245)
+        .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent("The queue is empty")
+        );
+
+    return {
+        components: [container],
+        flags: MessageFlags.IsComponentsV2,
+    };
+}
 
 /**
  * Format milliseconds to [mm:ss] or [hh:mm:ss] with leading zeroes
@@ -286,12 +301,7 @@ async function openQueueUI(interaction, client, player, requestedPage = 1) {
     const allTracks = getAllTracks(player);
 
     if (allTracks.length === 0) {
-        const embed = new EmbedBuilder()
-            .setColor(config.accentColor || 0x2b2d31)
-            .setDescription("The queue is currently empty.");
-        return interaction.reply({
-            embeds: [embed],
-        });
+        return interaction.reply(buildEmptyQueuePayload());
     }
 
     const sessionId = `qs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
@@ -432,11 +442,8 @@ module.exports = {
 
             const allTracks = getAllTracks(player);
             if (allTracks.length === 0) {
-                return await interaction.update({
-                    content: "The queue is currently empty.",
-                    embeds: [],
-                    components: [],
-                });
+                queueSessions.delete(sessionId);
+                return await interaction.update(buildEmptyQueuePayload());
             }
 
             const totalPages = Math.max(1, Math.ceil(allTracks.length / 10));

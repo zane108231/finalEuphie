@@ -1,7 +1,10 @@
 const { MessageFlags, AttachmentBuilder, ContainerBuilder, TextDisplayBuilder, EmbedBuilder } = require("discord.js");
 const { getGuildData, saveGuildData, clearUpdateInterval } = require("../utils/mongoGuildData");
 const { getUserData } = require("../utils/mongoUserData");
-const { createNowPlayingContainer, safeArtworkUrl } = require("../utils/components");
+const {
+    createNowPlayingContainer,
+    getSpotifyEmoji,
+} = require("../utils/components");
 const { recordIncident } = require("../utils/incidents");
 const { scheduleStatusUpdate } = require("../services/statusMonitor");
 const {
@@ -13,7 +16,8 @@ const { startSession, updateSessionProgress, endSession, addSessionParticipant, 
 const { startPlayerTracking, stopPlayerTracking } = require("../utils/modelMilestones");
 const { updateNowPlaying, scrobble } = require("../utils/lastfm");
 const {
-    getTrackDisplayParts,
+    getSpotifyTrackDisplayName,
+    getSpotifyTrackUrl,
     findSpotifyTrackMetadata,
     applySpotifyTrackMetadata,
 } = require("../utils/search");
@@ -23,6 +27,8 @@ const config = require("../../config");
 // Store scrobble timers per user (userId -> timeout)
 const scrobbleTimers = new Map();
 const trackErrorNotices = new Map();
+const lastfmLoginPromptCooldowns = new Map();
+const LASTFM_LOGIN_PROMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 const UPDATE_INTERVAL_MS = 30 * 1000; // Increased to 30 seconds to reduce CPU load
 
@@ -182,51 +188,56 @@ function resolveNowPlayingChannel(client, player, guildData) {
     return resolveAssignedChannel(client, player, guildData);
 }
 
-function requesterMention(track) {
-    const requester = track?.info?.requester;
-    const id = requester?.id || (typeof requester === "string" ? requester : null);
-    return id ? `<@${id}>` : "Unknown";
-}
+async function sendLastfmLoginPrompt(client, player, guildData, userId) {
+    const now = Date.now();
+    for (const [id, timestamp] of lastfmLoginPromptCooldowns) {
+        if (now - timestamp >= LASTFM_LOGIN_PROMPT_COOLDOWN_MS) {
+            lastfmLoginPromptCooldowns.delete(id);
+        }
+    }
+    if (lastfmLoginPromptCooldowns.has(userId)) return;
 
-function buildNowPlayingEmbedPayload(track, files) {
-    const { title: displayTitle, author } = getTrackDisplayParts(track);
-    const title = displayTitle.substring(0, 256);
+    const channel = resolveAssignedChannel(client, player, guildData);
+    if (!channel) return;
+
     const embed = new EmbedBuilder()
-        .setColor(config.accentColor || 0x2b2d31)
-        .setTitle(`Now Playing — ${title}`)
-        .setDescription(`By ${author}\nRequested by ${requesterMention(track)}`)
-        .setThumbnail(safeArtworkUrl(track));
-    if (files?.length) {
-        embed.setImage("attachment://musicard.png");
+        .setColor(0xf5a623)
+        .setDescription(
+            "Want to connect Euphie to Last.fm?\n" +
+            "Run `e!login` to connect your account and have your music scrobbled automatically."
+        );
+
+    try {
+        await channel.send({ embeds: [embed] });
+        lastfmLoginPromptCooldowns.set(userId, now);
+    } catch (error) {
+        console.error("[Last.fm] Failed to send login prompt:", error.message);
     }
-    return { embeds: [embed], files: files || [] };
 }
 
-async function sendNowPlayingPayload(channel, container, files, track) {
+function buildStartedPlayingEmbed(client, player, track) {
+    const displayName = getSpotifyTrackDisplayName(track)
+        .replace(/[\[\]]/g, "\\$&")
+        .slice(0, 512);
+    const spotifyUrl = getSpotifyTrackUrl(track);
+    const trackText = spotifyUrl
+        ? `[**${displayName}**](${spotifyUrl})`
+        : `**${displayName}**`;
+
+    return new EmbedBuilder()
+        .setColor(0x4f545c)
+        .setDescription(
+            `${getSpotifyEmoji(client, player)} Started playing ${trackText}`
+        );
+}
+
+async function sendNowPlayingPayload(channel, client, player, track) {
     try {
         return await channel.send({
-            components: [container],
-            files: files,
-            flags: MessageFlags.IsComponentsV2,
+            embeds: [buildStartedPlayingEmbed(client, player, track)],
         });
-    } catch (err) {
-        console.error("[euphire] Now playing (components) failed:", err.message);
-    }
-
-    try {
-        return await channel.send(buildNowPlayingEmbedPayload(track, files));
-    } catch (err) {
-        console.error("[euphire] Now playing (embed) failed:", err.message);
-    }
-
-    try {
-        const { title, author } = getTrackDisplayParts(track);
-        return await channel.send({
-            content: `**Now Playing — ${title}**\nBy ${author}\nRequested by ${requesterMention(track)}`,
-            files: files?.length ? files : undefined,
-        });
-    } catch (err) {
-        console.error("[euphire] Now playing (text) failed:", err.message);
+    } catch (error) {
+        console.error("[euphire] Failed to send started-playing embed:", error);
         return null;
     }
 }
@@ -260,13 +271,6 @@ async function announceNowPlaying(client, player, track, guildData) {
             artist: track.info.spotifyArtist,
         });
     }
-    const container = createNowPlayingContainer(
-        announcementTrack,
-        player,
-        guildData,
-        null,
-        client
-    );
     const channel = resolveNowPlayingChannel(client, player, guildData);
 
     if (!channel) {
@@ -276,8 +280,8 @@ async function announceNowPlaying(client, player, track, guildData) {
 
     const newMsg = await sendNowPlayingPayload(
         channel,
-        container,
-        [],
+        client,
+        player,
         announcementTrack
     );
     if (!newMsg) return;
@@ -527,6 +531,13 @@ function setupPlayerHandler(client) {
                         }, scrobbleDelay);
 
                         scrobbleTimers.set(memberId, timer);
+                    } else if (String(memberId) === String(reqId)) {
+                        await sendLastfmLoginPrompt(
+                            client,
+                            player,
+                            guildData,
+                            String(memberId)
+                        );
                     }
                 }
             } catch (err) {
@@ -769,6 +780,14 @@ function setupPlayerHandler(client) {
             }
 
             const guildData = getGuildData(player.guildId);
+            const queueWasCleared = player._clearQueueRequested === true;
+            if (queueWasCleared) {
+                clearTimeout(player._clearQueueRestoreTimer);
+                player._clearQueueRequested = false;
+                player.setLoop(player._clearQueueLoopMode || "none");
+                delete player._clearQueueLoopMode;
+                delete player._clearQueueRestoreTimer;
+            }
             await stopPlayerTracking(player, true);
 
             // Last.fm scrobbling: clear all pending scrobble timers for this session
@@ -835,7 +854,7 @@ function setupPlayerHandler(client) {
             }
 
             // Autoplay check: if autoplay is enabled, generate and play recommendation
-            if (guildData.autoplay) {
+            if (!queueWasCleared && guildData.autoplay) {
                 const { handleAutoplay } = require("../utils/autoplay");
                 const autoplayStarted = await handleAutoplay(client, player, guildData, resolveAssignedChannel);
                 if (autoplayStarted) {
@@ -887,10 +906,10 @@ function setupPlayerHandler(client) {
                 if (assignedChannel && guildData.playerChannelId === assignedChannel.id) {
                     guildData.playerMessageId = null;
                 }
+            }
 
-                if (assignedChannel) {
-                    await sendQueueEmptyNotice(assignedChannel, player.guildId, player.voiceChannel, client);
-                }
+            if (assignedChannel) {
+                await sendQueueEmptyNotice(assignedChannel, player.guildId, player.voiceChannel, client);
             }
 
             // Clear suggestions
