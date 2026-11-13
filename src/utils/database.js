@@ -107,6 +107,10 @@ function getDB() {
     return db;
 }
 
+function getMongoClient() {
+    return client;
+}
+
 function isDBConnected() {
     return isConnected;
 }
@@ -115,5 +119,6 @@ module.exports = {
     connectToMongoDB,
     disconnectFromMongoDB,
     getDB,
+    getMongoClient,
     isDBConnected,
 };

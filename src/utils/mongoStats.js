@@ -1,4 +1,4 @@
-const { getDB, isDBConnected } = require('./database');
+const { getDB, getMongoClient, isDBConnected } = require('./database');
 const crypto = require("crypto");
 
 /**
@@ -11,7 +11,7 @@ function generateSessionId() {
 /**
  * Ensure a user exists in the database
  */
-async function ensureUser(userId) {
+async function ensureUser(userId, session = null) {
     if (!isDBConnected()) return;
     
     const db = getDB();
@@ -26,7 +26,7 @@ async function ensureUser(userId) {
                 updatedAt: Date.now()
             }
         },
-        { upsert: true }
+        { upsert: true, ...(session ? { session } : {}) }
     );
 }
 
@@ -144,146 +144,181 @@ async function endSession(sessionId, completedNaturally = false, actualPositionM
     }
     
     const db = getDB();
-    
+    const mongoSession = getMongoClient().startSession();
+
     try {
-        const session = await db.collection('activeSessions').findOne({ sessionId });
-        if (!session) {
-            console.log("[euphire] endSession: session not found:", sessionId);
-            return;
-        }
-        
-        console.log(`[euphire] endSession: found session: ${sessionId}, track: "${session.trackTitle}", user: ${session.userId}`);
-        console.log(`[euphire] endSession: completedNaturally: ${completedNaturally}, actualPositionMs: ${actualPositionMs}`);
-        
-        const now = Date.now();
-        let durationMs = 0;
-        
-        if (completedNaturally) {
-            durationMs = session.lastPositionMs || (now - session.startedAt);
-            console.log(`[euphire] endSession: using track duration (natural completion): ${durationMs} ms`);
-        } else {
-            if (actualPositionMs && actualPositionMs > 0) {
-                durationMs = Math.min(actualPositionMs, session.lastPositionMs || actualPositionMs);
+        await mongoSession.withTransaction(async () => {
+            // Serialize overlapping trackEnd/queueEnd finalizers for this session.
+            const claim = await db.collection('activeSessions').updateOne(
+                { sessionId },
+                { $set: { finalizing: true } },
+                { session: mongoSession }
+            );
+            if (claim.matchedCount === 0) {
+                console.log("[euphire] endSession: session already finalized or not found:", sessionId);
+                return;
+            }
+
+            const activeSession = await db.collection('activeSessions').findOne(
+                { sessionId },
+                { session: mongoSession }
+            );
+            if (!activeSession) return;
+
+            console.log(`[euphire] endSession: found session: ${sessionId}, track: "${activeSession.trackTitle}", user: ${activeSession.userId}`);
+            console.log(`[euphire] endSession: completedNaturally: ${completedNaturally}, actualPositionMs: ${actualPositionMs}`);
+
+            const now = Date.now();
+            let durationMs = 0;
+
+            if (completedNaturally) {
+                durationMs = activeSession.lastPositionMs || (now - activeSession.startedAt);
+                console.log(`[euphire] endSession: using track duration (natural completion): ${durationMs} ms`);
             } else {
-                const elapsed = now - session.startedAt;
-                durationMs = Math.min(elapsed, session.lastPositionMs || elapsed);
+                if (actualPositionMs && actualPositionMs > 0) {
+                    durationMs = Math.min(
+                        actualPositionMs,
+                        activeSession.lastPositionMs || actualPositionMs
+                    );
+                } else {
+                    const elapsed = now - activeSession.startedAt;
+                    durationMs = Math.min(
+                        elapsed,
+                        activeSession.lastPositionMs || elapsed
+                    );
+                }
+                console.log(`[euphire] endSession: track ended early, counted actual listened time: ${durationMs} ms`);
             }
-            console.log(`[euphire] endSession: track ended early, counted actual listened time: ${durationMs} ms`);
-        }
-        
-        durationMs = Math.max(0, Math.floor(durationMs));
-        console.log(`[euphire] endSession: session base duration: ${durationMs} ms for session: ${sessionId}, track: "${session.trackTitle}"`);
-        
-        // Only credit users who were tracked as participants in the voice channel.
-        const listeners = new Map();
 
-        const participants = await db.collection('sessionParticipants')
-            .find({ sessionId })
-            .toArray();
+            durationMs = Math.max(0, Math.floor(durationMs));
+            console.log(`[euphire] endSession: session base duration: ${durationMs} ms for session: ${sessionId}, track: "${activeSession.trackTitle}"`);
 
-        for (const p of participants) {
-            let pDuration = p.listenedMs || 0;
-            if (p.joinedAt) {
-                pDuration += Math.max(0, now - p.joinedAt);
+            const listeners = new Map();
+            const participants = await db.collection('sessionParticipants')
+                .find({ sessionId }, { session: mongoSession })
+                .toArray();
+
+            for (const participant of participants) {
+                let listenedMs = participant.listenedMs || 0;
+                if (participant.joinedAt) {
+                    listenedMs += Math.max(0, now - participant.joinedAt);
+                }
+                if (
+                    completedNaturally &&
+                    listenedMs >= Math.max(0, durationMs - 5000)
+                ) {
+                    listenedMs = durationMs;
+                } else {
+                    listenedMs = Math.min(listenedMs, durationMs);
+                }
+                listenedMs = Math.max(0, Math.floor(listenedMs));
+
+                const current = listeners.get(participant.userId) || 0;
+                listeners.set(
+                    participant.userId,
+                    Math.max(current, listenedMs)
+                );
             }
-            if (completedNaturally && pDuration >= Math.max(0, durationMs - 5000)) {
-                pDuration = durationMs;
-            } else {
-                pDuration = Math.min(pDuration, durationMs);
-            }
-            pDuration = Math.max(0, Math.floor(pDuration));
 
-            const cur = listeners.get(p.userId) || 0;
-            listeners.set(p.userId, Math.max(cur, pDuration));
-        }
+            console.log(`[euphire] endSession: committing stats for ${listeners.size} listener(s):`, [...listeners.entries()]);
 
-        console.log(`[euphire] endSession: committing stats for ${listeners.size} listener(s):`, [...listeners.entries()]);
+            for (const [listenerId, listenerMs] of listeners.entries()) {
+                if (listenerMs < 5000) continue;
 
-        // Commit stats for every tracked listener.
-        for (const [listenerId, listenerMs] of listeners.entries()) {
-            if (listenerMs < 5000) continue;
+                await ensureUser(listenerId, mongoSession);
 
-            await ensureUser(listenerId);
+                const trackPlayedIncrement =
+                    (completedNaturally &&
+                        listenerMs >= Math.min(30000, durationMs * 0.5)) ||
+                    listenerMs >= 30000
+                        ? 1
+                        : 0;
 
-            const trackPlayedIncrement = (completedNaturally && listenerMs >= Math.min(30000, durationMs * 0.5)) || listenerMs >= 30000 ? 1 : 0;
-
-            // 1. Update user total listening time and tracks played
-            await db.collection('userStats').updateOne(
-                { userId: listenerId },
-                { 
-                    $inc: { 
-                        totalListeningMs: listenerMs,
-                        tracksPlayed: trackPlayedIncrement
+                await db.collection('userStats').updateOne(
+                    { userId: listenerId },
+                    {
+                        $inc: {
+                            totalListeningMs: listenerMs,
+                            tracksPlayed: trackPlayedIncrement,
+                        },
+                        $set: { updatedAt: now },
                     },
-                    $set: { updatedAt: now }
-                },
-                { upsert: true }
-            );
+                    { upsert: true, session: mongoSession }
+                );
 
-            // 2. Update server listening time (Top Servers!)
-            await db.collection('serverStats').updateOne(
-                { userId: listenerId, guildId: session.guildId },
-                { 
-                    $inc: { listeningMs: listenerMs },
-                    $set: { guildName: session.guildName || "Unknown Server" }
-                },
-                { upsert: true }
-            );
-
-            // 3. Update track statistics (Top Tracks!)
-            await db.collection('trackStats').updateOne(
-                { userId: listenerId, trackId: session.trackId },
-                { 
-                    $inc: { 
-                        listeningMs: listenerMs,
-                        playCount: trackPlayedIncrement
+                await db.collection('serverStats').updateOne(
+                    { userId: listenerId, guildId: activeSession.guildId },
+                    {
+                        $inc: { listeningMs: listenerMs },
+                        $set: {
+                            guildName: activeSession.guildName || "Unknown Server",
+                        },
                     },
-                    $set: { 
-                        trackTitle: session.trackTitle || "Unknown Track",
-                        trackArtist: session.trackArtist,
-                        trackArtistSource: session.trackArtistSource,
-                        trackSourceName: session.trackSourceName,
-                        trackUri: session.trackUri
-                    }
-                },
-                { upsert: true }
-            );
-            console.log(`[euphire] endSession: updated stats for listener ${listenerId}: +${listenerMs}ms, +${trackPlayedIncrement} plays`);
-        }
+                    { upsert: true, session: mongoSession }
+                );
 
-        // 4. Update shared listening time for all pairs of listeners (Top Friends!)
-        const qualifiedListeners = [...listeners.entries()].filter(([_, ms]) => ms >= 5000);
-        for (let i = 0; i < qualifiedListeners.length; i++) {
-            for (let j = i + 1; j < qualifiedListeners.length; j++) {
-                const [userA, msA] = qualifiedListeners[i];
-                const [userB, msB] = qualifiedListeners[j];
-                const sharedMs = Math.min(msA, msB);
-                if (sharedMs >= 5000) {
-                    await ensureUser(userA);
-                    await ensureUser(userB);
+                await db.collection('trackStats').updateOne(
+                    { userId: listenerId, trackId: activeSession.trackId },
+                    {
+                        $inc: {
+                            listeningMs: listenerMs,
+                            playCount: trackPlayedIncrement,
+                        },
+                        $set: {
+                            trackTitle: activeSession.trackTitle || "Unknown Track",
+                            trackArtist: activeSession.trackArtist,
+                            trackArtistSource: activeSession.trackArtistSource,
+                            trackSourceName: activeSession.trackSourceName,
+                            trackUri: activeSession.trackUri,
+                        },
+                    },
+                    { upsert: true, session: mongoSession }
+                );
+                console.log(`[euphire] endSession: updated stats for listener ${listenerId}: +${listenerMs}ms, +${trackPlayedIncrement} plays`);
+            }
+
+            const qualifiedListeners = [...listeners.entries()]
+                .filter(([_, listenedMs]) => listenedMs >= 5000);
+            for (let i = 0; i < qualifiedListeners.length; i++) {
+                for (let j = i + 1; j < qualifiedListeners.length; j++) {
+                    const [userA, durationA] = qualifiedListeners[i];
+                    const [userB, durationB] = qualifiedListeners[j];
+                    const sharedMs = Math.min(durationA, durationB);
+                    if (sharedMs < 5000) continue;
+
+                    await ensureUser(userA, mongoSession);
+                    await ensureUser(userB, mongoSession);
 
                     await db.collection('sharedListening').updateOne(
-                        { userId: userA, friendId: userB, guildId: session.guildId },
-                        { $inc: { sharedMs: sharedMs } },
-                        { upsert: true }
+                        { userId: userA, friendId: userB, guildId: activeSession.guildId },
+                        { $inc: { sharedMs } },
+                        { upsert: true, session: mongoSession }
                     );
 
                     await db.collection('sharedListening').updateOne(
-                        { userId: userB, friendId: userA, guildId: session.guildId },
-                        { $inc: { sharedMs: sharedMs } },
-                        { upsert: true }
+                        { userId: userB, friendId: userA, guildId: activeSession.guildId },
+                        { $inc: { sharedMs } },
+                        { upsert: true, session: mongoSession }
                     );
                 }
             }
-        }
-        
-        // Delete session and participants from active sessions
-        await db.collection('sessionParticipants').deleteMany({ sessionId });
-        await db.collection('activeSessions').deleteOne({ sessionId });
-        
-        console.log(`[euphire] endSession: session ${sessionId} closed successfully`);
+
+            await db.collection('sessionParticipants').deleteMany(
+                { sessionId },
+                { session: mongoSession }
+            );
+            await db.collection('activeSessions').deleteOne(
+                { sessionId },
+                { session: mongoSession }
+            );
+
+            console.log(`[euphire] endSession: session ${sessionId} closed successfully`);
+        });
     } catch (error) {
         console.error("[euphire] Failed to end stats session:", error.message);
+        throw error;
+    } finally {
+        await mongoSession.endSession();
     }
 }
 
@@ -355,29 +390,38 @@ async function removeSessionParticipant(sessionId, userId) {
 /**
  * Update shared listening time for all current participants
  */
-async function updateSharedListening(sessionId, guildId, ownerId, durationMs) {
+async function updateSharedListening(
+    sessionId,
+    guildId,
+    ownerId,
+    durationMs,
+    mongoSession = null
+) {
     if (!isDBConnected()) return;
     
     const db = getDB();
     
     const participants = await db.collection('sessionParticipants')
-        .find({ sessionId, userId: { $ne: ownerId } })
+        .find(
+            { sessionId, userId: { $ne: ownerId } },
+            mongoSession ? { session: mongoSession } : undefined
+        )
         .toArray();
     
     for (const participant of participants) {
-        await ensureUser(participant.userId);
+        await ensureUser(participant.userId, mongoSession);
         
         if (durationMs > 0) {
             await db.collection('sharedListening').updateOne(
                 { userId: ownerId, friendId: participant.userId, guildId },
                 { $inc: { sharedMs: durationMs } },
-                { upsert: true }
+                { upsert: true, ...(mongoSession ? { session: mongoSession } : {}) }
             );
             
             await db.collection('sharedListening').updateOne(
                 { userId: participant.userId, friendId: ownerId, guildId },
                 { $inc: { sharedMs: durationMs } },
-                { upsert: true }
+                { upsert: true, ...(mongoSession ? { session: mongoSession } : {}) }
             );
         }
     }
