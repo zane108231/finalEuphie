@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, MessageFlags } = require("discord.js");
+const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js");
 const { resumeGuildSession } = require("../utils/playbackRecovery");
 
 module.exports = {
@@ -30,8 +30,13 @@ module.exports = {
                 });
             }
 
+            const embed = new EmbedBuilder()
+                .setColor(0x57f287)
+                .setTitle("Session Resumed")
+                .setDescription("Your saved music session has been resumed.");
+
             return interaction.reply({
-                content: "Your saved music session has been resumed.",
+                embeds: [embed],
                 flags: MessageFlags.Ephemeral,
             });
         } catch (err) {

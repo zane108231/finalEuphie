@@ -65,8 +65,8 @@ async function respondToEuphieMention(client, message) {
                 `[\`m!leave\`](${supportUrl}) - Make the bot leave the voice channel\n` +
                 `[\`m!setup\`](${supportUrl}) - Helps you setup certain bot features\n\n` +
                 "Use the [`m!help`] command for more commands.\n\n" +
-                "Support server\n" +
-                `Join our **[support server](${supportUrl})** if you need help, want to get information about updates and issues or want to engage in community discussions with the developers!`
+                "Support Server\n" +
+                `Join our [Support Server](${supportUrl}) if you need help, want to get information about updates and issues or want to engage in community discussions with the developers!`
         );
 
     try {
