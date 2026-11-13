@@ -70,10 +70,12 @@ async function handlePlaylistSelection(interaction, client) {
     interaction.queryOverride = selectedTrack.uri;
     try {
         const result = await require("../commands/play").execute(interaction, client);
-        await interaction.message.edit({
-            content: `Queued **${selectedTrack.title}** from **${selection.name || "the playlist"}**.`,
-            components: [],
-        });
+        if (interaction.playbackQueryQueued) {
+            await interaction.message.edit({
+                content: `Queued **${selectedTrack.title}** from **${selection.name || "the playlist"}**.`,
+                components: [],
+            });
+        }
         return result;
     } finally {
         delete interaction.queryOverride;

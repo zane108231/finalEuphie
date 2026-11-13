@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, MessageFlags } = require("discord.js");
 const { resolvePlaylistSelection } = require("../utils/playlistSelection");
+const { replyNotInVoiceChannel } = require("../utils/permissions");
 const playCommand = require("./play");
 
 module.exports = {
@@ -41,6 +42,9 @@ module.exports = {
                 content: "Track number must be a positive whole number.",
                 flags: MessageFlags.Ephemeral,
             });
+        }
+        if (!interaction.member?.voice?.channel) {
+            return replyNotInVoiceChannel(interaction);
         }
 
         const selection = await resolvePlaylistSelection(

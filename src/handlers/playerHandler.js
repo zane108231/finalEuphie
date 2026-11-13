@@ -841,7 +841,7 @@ function setupPlayerHandler(client) {
                 guildData.leaveAfterQueueEnd = false;
                 await saveGuildData(player.guildId, guildData);
                 await require("../utils/playbackRecovery")
-                    .removeSavedSession(player.guildId)
+                    .removeSavedSession(player.guildId, client.botId)
                     .catch((err) => {
                         console.error(
                             `[euphire] Failed to clear playback snapshot after playleave for ${player.guildId}:`,
@@ -868,7 +868,7 @@ function setupPlayerHandler(client) {
             // Set 3-minute idle timeout before leaving
             const { setPlayerIdleTimeout } = require("../utils/playback");
             await require("../utils/playbackRecovery")
-                .removeSavedSession(player.guildId)
+                .removeSavedSession(player.guildId, client.botId)
                 .catch((err) => {
                     console.error(
                         `[euphire] Failed to clear completed playback session for ${player.guildId}:`,

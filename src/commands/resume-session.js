@@ -18,7 +18,10 @@ module.exports = {
         try {
             const player = await resumeGuildSession(
                 interaction.guild.id,
-                interaction.user.id
+                interaction.user.id,
+                interaction.member?.voice?.channelId ||
+                    interaction.member?.voice?.channel?.id ||
+                    null
             );
             if (!player) {
                 return interaction.reply({

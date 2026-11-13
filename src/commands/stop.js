@@ -62,7 +62,7 @@ module.exports = {
         guildData.suggestions = [];
         guildData.previousTracks = [];
 
-        await removeSavedSession(interaction.guild.id);
+        await removeSavedSession(interaction.guild.id, client.botId);
         player.queue?.clear?.();
         player.stop?.();
 

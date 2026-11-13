@@ -17,7 +17,7 @@ const MUSIC_COMMANDS = new Set([
     "remove-current", "remove-keyword", "remove-duplicates", "song-info",
     "top-songs", "album-info", "artist-info", "searchlyrics", "save",
     "next-up", "upcoming", "requested", "recently-played", "queue-info",
-    "session-statistics", "session-information"
+    "session-statistics", "session-information", "resume-session"
 ]);
 
 /**

@@ -6,6 +6,7 @@ const {
     StringSelectMenuOptionBuilder,
 } = require("discord.js");
 const { createPlaylistSelection } = require("../utils/playlistSelection");
+const { replyNotInVoiceChannel } = require("../utils/permissions");
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -27,6 +28,9 @@ module.exports = {
                 content: "Usage: `e!playlistselect <playlist URL>`",
                 flags: MessageFlags.Ephemeral,
             });
+        }
+        if (!interaction.member?.voice?.channel) {
+            return replyNotInVoiceChannel(interaction);
         }
 
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });

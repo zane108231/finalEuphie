@@ -17,6 +17,25 @@ function createNoBotInVoiceEmbed() {
         .setDescription("There are no bots in your voice channel.");
 }
 
+function createNotInVoiceChannelEmbed() {
+    return new EmbedBuilder()
+        .setColor(0xED4245)
+        .setDescription("You are not in a voice channel");
+}
+
+async function replyNotInVoiceChannel(interaction) {
+    const embed = createNotInVoiceChannelEmbed();
+
+    if (interaction.replied || interaction.deferred) {
+        return interaction.editReply({ embeds: [embed] });
+    }
+
+    return interaction.reply({
+        embeds: [embed],
+        flags: MessageFlags.Ephemeral,
+    });
+}
+
 const VOICE_CHANNEL_DENIAL =
     "❌ You need to be in the same voice channel as the bot to use these controls.";
 
@@ -466,10 +485,7 @@ async function requireMusicAction(interaction, client, action) {
     const voiceChannelId = interaction.member?.voice?.channel?.id;
 
     if (!voiceChannelId) {
-        await interaction.reply({
-            content: "❌ You need to be in a voice channel to use this command.",
-            flags: MessageFlags.Ephemeral,
-        });
+        await replyNotInVoiceChannel(interaction);
         return null;
     }
 
@@ -719,6 +735,8 @@ async function revokeAction(guildId, action, userId) {
 
 module.exports = {
     VOICE_CHANNEL_DENIAL,
+    createNotInVoiceChannelEmbed,
+    replyNotInVoiceChannel,
     AVAILABLE_PERMISSIONS,
     ALL_PERMISSIONS,
     MUSIC_ACTIONS,

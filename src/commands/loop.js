@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const { requireMusicAction } = require("../utils/permissions");
+const { persistPlayer } = require("../utils/playbackRecovery");
 
 module.exports = {
     aliases: ["repeat", "loopq"],
@@ -78,6 +79,7 @@ module.exports = {
         player.setLoop(newMode);
         guildData.loop = newMode;
         await saveGuildData(guildId, guildData);
+        await persistPlayer(client, player);
 
         // Green line on left side of rectangle embed message (0x00FF00)
         const embed = new EmbedBuilder()

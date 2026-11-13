@@ -2,6 +2,7 @@ const { MessageFlags } = require("discord.js");
 const { getGuildData } = require("../utils/mongoGuildData");
 const { createChatPlayLoadingContainer } = require("../utils/components");
 const { startIfIdle, ensurePlayer, getOccupiedVoiceChannel, buildAlreadyInUsePayload } = require("../utils/playback");
+const { createNotInVoiceChannelEmbed } = require("../utils/permissions");
 
 async function sendChatPlayFeedback(channel, content, timeoutMs = 5000) {
     try {
@@ -58,7 +59,7 @@ async function handleChatPlayMessage(client, message) {
     if (!voiceChannel) {
         try {
             const warn = await message.channel.send({
-                content: "❌ You need to join a voice channel first!",
+                embeds: [createNotInVoiceChannelEmbed()],
             });
             setTimeout(() => warn.delete().catch(() => {}), 5000);
         } catch (err) {

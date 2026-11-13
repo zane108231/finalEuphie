@@ -50,6 +50,37 @@ async function respondToJockieNoBotsMessage(client, message) {
     }
 }
 
+async function respondToEuphieMention(client, message) {
+    if (!client.user?.id || !message.mentions?.users?.has(client.user.id)) {
+        return false;
+    }
+
+    const supportUrl = "https://discord.gg/dmj8YpKn3F";
+    const embed = new EmbedBuilder()
+        .setColor(0xf4a7c7)
+        .setDescription(
+            "Basic commands\n" +
+                `[\`m!play\`](${supportUrl}) - Play a track by link or search term\n` +
+                `[\`m!skip\`](${supportUrl}) - Skip the current track\n` +
+                `[\`m!leave\`](${supportUrl}) - Make the bot leave the voice channel\n` +
+                `[\`m!setup\`](${supportUrl}) - Helps you setup certain bot features\n\n` +
+                "Use the [`m!help`] command for more commands.\n\n" +
+                "Support server\n" +
+                `Join our **[support server](${supportUrl})** if you need help, want to get information about updates and issues or want to engage in community discussions with the developers!`
+        );
+
+    try {
+        await message.channel.send({ embeds: [embed] });
+    } catch (error) {
+        console.error(
+            `[euphire] Could not respond to a mention in channel ${message.channel.id}:`,
+            error.message
+        );
+    }
+
+    return true;
+}
+
 module.exports = {
     name: "messageCreate",
     async execute(client, message) {
@@ -58,6 +89,8 @@ module.exports = {
             await respondToJockieNoBotsMessage(client, message);
             return;
         }
+
+        if (await respondToEuphieMention(client, message)) return;
 
         if (/^\s*m!\S*/i.test(message.content || "")) {
             rememberJockieCommand({

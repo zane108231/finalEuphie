@@ -67,7 +67,7 @@ module.exports = {
         guildData.chatPlayMessageId = null;
         await saveGuildData(interaction.guild.id, guildData);
 
-        await removeSavedSession(interaction.guild.id);
+        await removeSavedSession(interaction.guild.id, client.botId);
         player.queue?.clear?.();
         player.stop?.();
         markIntentionalDisconnect(player);

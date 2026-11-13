@@ -1,6 +1,9 @@
 const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js");
 const { getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
-const { createNoBotInVoiceEmbed } = require("../utils/permissions");
+const {
+    createNoBotInVoiceEmbed,
+    replyNotInVoiceChannel,
+} = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
 const { searchYoutubeTrack, resolveSpotifyTrackAudio } = require("../utils/search");
 const { getSpotifyPlaylistMetadata } = require("../utils/spotifyPlaylistSearch");
@@ -66,10 +69,7 @@ module.exports = {
 
         const member = interaction.member;
         if (!member.voice?.channel) {
-            return interaction.reply({
-                content: "❌ You need to be in a voice channel!",
-                flags: MessageFlags.Ephemeral,
-            });
+            return replyNotInVoiceChannel(interaction);
         }
 
         const voiceChannelId = member.voice.channel.id;

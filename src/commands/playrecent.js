@@ -5,6 +5,7 @@ const {
     ensurePlayer,
     startIfIdle,
 } = require("../utils/playback");
+const { replyNotInVoiceChannel } = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
 
 module.exports = {
@@ -15,10 +16,7 @@ module.exports = {
     async execute(interaction, client) {
         const voiceChannel = interaction.member?.voice?.channel;
         if (!voiceChannel) {
-            return interaction.reply({
-                content: "You need to be in a voice channel to use this command.",
-                flags: MessageFlags.Ephemeral,
-            });
+            return replyNotInVoiceChannel(interaction);
         }
 
         const recent = await getDB()

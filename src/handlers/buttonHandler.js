@@ -9,6 +9,7 @@ const {
     setVolumeSafe,
     markIntentionalDisconnect,
 } = require("../utils/playback");
+const { persistPlayer } = require("../utils/playbackRecovery");
 const { endSession, startSession, addSessionParticipant } = require("../utils/mongoStats");
 const coordinator = require("../utils/mongoCoordinator");
 const config = require("../../config");
@@ -584,22 +585,26 @@ async function handleButtonInteraction(client, interaction) {
         case "shuffle": {
             if (player.queue.length > 0) {
                 player.queue.shuffle();
+                await persistPlayer(client, player);
             }
             needsVisualUpdate = true;
             break;
         }
 
         case "loop": {
-            if (guildData.loop === "none") {
+            const currentLoop = player.loop || guildData.loop || "none";
+            if (currentLoop === "none") {
                 guildData.loop = "track";
                 player.setLoop("track");
-            } else if (guildData.loop === "track") {
+            } else if (currentLoop === "track") {
                 guildData.loop = "queue";
                 player.setLoop("queue");
             } else {
                 guildData.loop = "none";
                 player.setLoop("none");
             }
+            await saveGuildData(interaction.guild.id, guildData);
+            await persistPlayer(client, player);
             needsVisualUpdate = true;
             break;
         }

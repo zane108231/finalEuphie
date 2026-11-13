@@ -30,7 +30,10 @@ function scheduleResumeTimeout(client, player, snapshot) {
         );
 
         try {
-            await removeSavedSession(snapshot.guildId);
+            await removeSavedSession(
+                snapshot.guildId,
+                snapshot.botId || client.botId
+            );
         } catch (error) {
             console.error(
                 `[euphire] Could not delete expired playback session for guild ${snapshot.guildId}:`,
@@ -79,6 +82,10 @@ function getRequesterName(track) {
     return requester?.username || requester?.user?.username || null;
 }
 
+function normalizeLoopMode(mode) {
+    return mode === "track" || mode === "queue" ? mode : "none";
+}
+
 function serializeTrack(track) {
     const info = track?.info;
     if (!info?.uri) return null;
@@ -94,9 +101,13 @@ function serializeTrack(track) {
     };
 }
 
-async function removeSavedSession(guildId) {
-    if (!guildId) return;
-    await getDB().collection("playbackSessions").deleteOne({ guildId });
+async function removeSavedSession(guildId, botId) {
+    if (!guildId || !botId) {
+        throw new Error("Both guildId and botId are required to remove a playback session.");
+    }
+    await getDB()
+        .collection("playbackSessions")
+        .deleteOne({ guildId, botId });
 }
 
 async function saveRecentlyPlayedTrack(track) {
@@ -125,7 +136,7 @@ async function persistPlayer(client, player) {
         player.playing || player.paused ? serializeTrack(player.current) : null;
 
     if (!current && queue.length === 0) {
-        await removeSavedSession(player.guildId);
+        await removeSavedSession(player.guildId, client.botId);
         return;
     }
 
@@ -141,6 +152,7 @@ async function persistPlayer(client, player) {
             null,
         currentTrack: current,
         queue,
+        loopMode: normalizeLoopMode(player.loop),
         positionMs: Math.max(
             0,
             Number(
@@ -158,7 +170,7 @@ async function persistPlayer(client, player) {
     await getDB()
         .collection("playbackSessions")
         .updateOne(
-            { guildId: player.guildId },
+            { guildId: player.guildId, botId: client.botId },
             { $set: snapshot },
             { upsert: true }
         );
@@ -312,7 +324,7 @@ async function prepareSnapshot(client, snapshot) {
     if (userId && !snapshot.sessionOwnerId) {
         snapshot.sessionOwnerId = String(userId);
         await getDB().collection("playbackSessions").updateOne(
-            { guildId: snapshot.guildId },
+            { guildId: snapshot.guildId, botId: snapshot.botId },
             { $set: { sessionOwnerId: String(userId) } }
         );
     }
@@ -342,6 +354,9 @@ async function prepareSnapshot(client, snapshot) {
 
     player.assignedTextChannel = snapshot.textChannelId || null;
     player._restoringSession = true;
+    player.setLoop(
+        normalizeLoopMode(snapshot.loopMode ?? guildData.loop)
+    );
     player.queue.clear();
 
     const tracksToRestore = [
@@ -378,7 +393,10 @@ async function prepareSnapshot(client, snapshot) {
     player._restoringSession = false;
 
     if (resolvedTracks.length === 0) {
-        await removeSavedSession(snapshot.guildId);
+        await removeSavedSession(
+            snapshot.guildId,
+            snapshot.botId || client.botId
+        );
         await coordinator.releaseBot(snapshot.voiceChannelId);
         player.destroy();
         throw new Error("None of the saved tracks are available anymore.");
@@ -523,10 +541,31 @@ function startCheckpointing(client) {
     }, CHECKPOINT_INTERVAL_MS);
 }
 
-async function resumeGuildSession(guildId, userId) {
-    const snapshot = await getDB()
+async function resumeGuildSession(guildId, userId, voiceChannelId = null) {
+    const snapshots = await getDB()
         .collection("playbackSessions")
-        .findOne({ guildId });
+        .find({ guildId })
+        .toArray();
+    if (snapshots.length === 0) return null;
+
+    let snapshot;
+    if (voiceChannelId) {
+        snapshot = snapshots.find(
+            (savedSession) => savedSession.voiceChannelId === voiceChannelId
+        );
+        if (!snapshot) {
+            throw new Error(
+                "There is no saved music session for your current voice channel."
+            );
+        }
+    } else if (snapshots.length === 1) {
+        [snapshot] = snapshots;
+    } else {
+        throw new Error(
+            "Join the voice channel where the Euphie session is waiting, then run this command again."
+        );
+    }
+
     if (!snapshot) return null;
     if (
         snapshot.sessionOwnerId &&

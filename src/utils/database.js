@@ -70,8 +70,22 @@ async function createIndexes() {
         await db.collection('activeSessions').createIndex({ userId: 1 });
 
         // Music playback recovery and maintenance state
-        await db.collection('playbackSessions').createIndex({ guildId: 1 }, { unique: true });
-        await db.collection('playbackSessions').createIndex({ botId: 1 });
+        const playbackSessions = db.collection('playbackSessions');
+        await playbackSessions.createIndex(
+            { guildId: 1, botId: 1 },
+            { unique: true }
+        );
+        const playbackSessionIndexes = await playbackSessions.indexes();
+        const legacyGuildIndex = playbackSessionIndexes.find(
+            (index) =>
+                index.unique &&
+                index.key?.guildId === 1 &&
+                Object.keys(index.key).length === 1
+        );
+        if (legacyGuildIndex) {
+            await playbackSessions.dropIndex(legacyGuildIndex.name);
+        }
+        await playbackSessions.createIndex({ botId: 1 });
         await db.collection('recentTracks').createIndex({ userId: 1 }, { unique: true });
         await db.collection('playlistSelections').createIndex({ token: 1 }, { unique: true });
         await db.collection('playlistSelections').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });

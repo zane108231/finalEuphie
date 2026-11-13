@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require("discord.js");
 const { requireMusicAction, getMusicDenial } = require("../utils/permissions");
+const { persistPlayer } = require("../utils/playbackRecovery");
 
 module.exports = {
     aliases: ["mix"],
@@ -24,6 +25,7 @@ module.exports = {
 
         // Shuffle queue
         player.queue.shuffle();
+        await persistPlayer(client, player);
 
         // Strictly follows reference image: Green outline + "The queue has been shuffled"
         const embed = new EmbedBuilder()

@@ -10,6 +10,7 @@ const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const { startIfIdle, ensurePlayer, setAnnounceChannel, getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
 const coordinator = require("../utils/mongoCoordinator");
 const { getPrefix } = require("../utils/prefixStore");
+const { replyNotInVoiceChannel } = require("../utils/permissions");
 const {
     getSpotifyTrackDisplayName,
     setTrackDisplayMetadata,
@@ -322,10 +323,7 @@ module.exports = {
         const member = interaction.member;
 
         if (!member.voice?.channel) {
-            return interaction.reply({
-                content: "❌ You need to be in a voice channel!",
-                flags: MessageFlags.Ephemeral,
-            });
+            return replyNotInVoiceChannel(interaction);
         }
 
         const voiceChannelId = member.voice.channel.id;
