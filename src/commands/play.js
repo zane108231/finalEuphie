@@ -405,6 +405,7 @@ module.exports = {
             player = await ensurePlayer(client, {
                 guildId: interaction.guild.id,
                 voiceChannelId: voiceChannelId,
+                voiceChannelObject: member.voice.channel,
                 textChannelId: interaction.channel.id,
                 volume: guildData.volume,
                 requesterId: interaction.user.id,
@@ -423,7 +424,12 @@ module.exports = {
         } catch (err) {
             console.error("[euphire] Failed to create player:", err);
             coordinator.releaseBot(voiceChannelId);
-            return interaction.editReply({ content: "❌ Could not join your voice channel. Try again in a moment." });
+            return interaction.editReply({
+                content:
+                    err.code === "VOICE_CHANNEL_PERMISSION_MISSING"
+                        ? err.message
+                        : "❌ Could not join your voice channel. Try again in a moment.",
+            });
         }
 
         try {

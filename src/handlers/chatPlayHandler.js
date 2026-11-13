@@ -84,6 +84,7 @@ async function handleChatPlayMessage(client, message) {
         let player = await ensurePlayer(client, {
             guildId: message.guild.id,
             voiceChannelId: voiceChannel.id,
+            voiceChannelObject: voiceChannel,
             textChannelId: message.channel.id,
             volume: guildData.volume,
             requesterId: message.author.id,
@@ -181,7 +182,12 @@ async function handleChatPlayMessage(client, message) {
         }
     } catch (error) {
         console.error("[euphire ChatPlay] Error:", error.message);
-        await sendChatPlayFeedback(message.channel, "❌ Something went wrong while searching for that song.");
+        await sendChatPlayFeedback(
+            message.channel,
+            error.code === "VOICE_CHANNEL_PERMISSION_MISSING"
+                ? error.message
+                : "❌ Something went wrong while searching for that song."
+        );
     }
 
     return true;

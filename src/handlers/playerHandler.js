@@ -590,7 +590,7 @@ function setupPlayerHandler(client) {
                         const participantIds = new Set();
                         if (voiceChannel.members) {
                             voiceChannel.members.forEach((member) => {
-                                if (!member.user?.bot && member.id !== userId) {
+                                if (!member.user?.bot) {
                                     participantIds.add(member.id);
                                 }
                             });
@@ -598,7 +598,7 @@ function setupPlayerHandler(client) {
                         const guild = client.guilds.cache.get(player.guildId);
                         if (guild?.voiceStates?.cache) {
                             guild.voiceStates.cache.forEach((vs, memberId) => {
-                                if (vs.channelId === player.voiceChannel && memberId !== client.user?.id && memberId !== userId) {
+                                if (vs.channelId === player.voiceChannel && memberId !== client.user?.id) {
                                     const m = vs.member || guild.members.cache.get(memberId);
                                     if (!m?.user?.bot) {
                                         participantIds.add(memberId);
@@ -606,9 +606,11 @@ function setupPlayerHandler(client) {
                                 }
                             });
                         }
-                        for (const pId of participantIds) {
-                            addSessionParticipant(sessionId, pId).catch(() => {});
-                        }
+                        await Promise.all(
+                            [...participantIds].map((pId) =>
+                                addSessionParticipant(sessionId, pId)
+                            )
+                        );
                     }
                 } else {
                     console.log(`[euphire] [${client.botId}] No requester found for track, not starting stats session`);

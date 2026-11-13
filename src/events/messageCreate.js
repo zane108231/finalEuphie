@@ -9,7 +9,16 @@ const coordinator = require("../utils/mongoCoordinator");
 
 function isJockieNoBotsMessage(message) {
     if (!JOCKIE_BOT_IDS.has(message.author.id)) return false;
-    const content = String(message.content || "")
+    const embedContent = (message.embeds || []).flatMap((embed) => [
+        embed.title,
+        embed.description,
+        embed.author?.name,
+        embed.footer?.text,
+        ...(embed.fields || []).flatMap((field) => [field.name, field.value]),
+    ]);
+    const content = [message.content, ...embedContent]
+        .filter(Boolean)
+        .join(" ")
         .replace(/\s+/g, " ")
         .toLowerCase();
     return (
@@ -29,7 +38,7 @@ async function respondToJockieNoBotsMessage(client, message) {
         .setColor(0xf4a7c7)
         .setTitle("Ubos na Jockie? Ako na!")
         .setDescription("Gamitin mo na ako `e!join`")
-        .setFooter({ text: "Ako napapalit muna diyan" });
+        .setFooter({ text: "Ako napapalit diyan" });
 
     try {
         await message.channel.send({ embeds: [embed] });

@@ -79,6 +79,7 @@ module.exports = {
             player = await ensurePlayer(assignedClient, {
                 guildId,
                 voiceChannelId: voiceChannel.id,
+                voiceChannelObject: voiceChannel,
                 textChannelId: interaction.channel.id,
                 volume: guildData.volume,
                 requesterId: interaction.user.id,
@@ -121,7 +122,10 @@ module.exports = {
             await releaseNewReservation();
             console.error("[euphire] playrecent failed:", err);
             return interaction.reply({
-                content: "Could not queue your recently played tracks.",
+                content:
+                    err.code === "VOICE_CHANNEL_PERMISSION_MISSING"
+                        ? err.message
+                        : "Could not queue your recently played tracks.",
                 flags: MessageFlags.Ephemeral,
             });
         }

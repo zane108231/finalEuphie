@@ -1,5 +1,12 @@
-const { MessageFlags, ContainerBuilder, TextDisplayBuilder, EmbedBuilder } = require("discord.js");
+const {
+    MessageFlags,
+    ContainerBuilder,
+    TextDisplayBuilder,
+    EmbedBuilder,
+    PermissionFlagsBits,
+} = require("discord.js");
 const config = require("../../config");
+const { isHumanVoiceMember } = require("./voiceMembers");
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -142,9 +149,65 @@ async function replyAlreadyInUse(interaction, channel) {
     }
 }
 
+async function getVoiceChannelBotMember(
+    client,
+    guildId,
+    voiceChannelId,
+    voiceChannelObject
+) {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+        throw new Error(`Euphie ${client.user?.username || client.botId} is not available in this server.`);
+    }
+
+    const botMember = guild.members.me || (await guild.members.fetchMe());
+    if (botMember.voice?.channelId === voiceChannelId) return botMember;
+
+    let voiceChannel =
+        voiceChannelObject?.id === voiceChannelId &&
+        voiceChannelObject.guild?.id === guildId
+            ? voiceChannelObject
+            : guild.channels.cache.get(voiceChannelId);
+    if (!voiceChannel) {
+        voiceChannel = await guild.channels.fetch(voiceChannelId);
+    }
+    if (!voiceChannel?.permissionsFor) {
+        throw new Error(`Could not check permissions for voice channel ${voiceChannelId}.`);
+    }
+
+    const permissionMember =
+        voiceChannel.guild?.members?.cache?.get(client.user.id) || botMember;
+    const permissions = voiceChannel.permissionsFor(permissionMember);
+    const missingPermissions = [
+        ["View Channel", PermissionFlagsBits.ViewChannel],
+        ["Connect", PermissionFlagsBits.Connect],
+    ].filter(([, permission]) => !permissions?.has(permission));
+
+    if (missingPermissions.length > 0) {
+        const botLabel = client.user?.id
+            ? `<@${client.user.id}>`
+            : `Euphie ${client.botId}`;
+        const missing = missingPermissions
+            .map(([name]) => `**${name}**`)
+            .join(" and ");
+        const permissionLabel =
+            missingPermissions.length === 1 ? "permission" : "permissions";
+        const error = new Error(
+            `I can't join <#${voiceChannelId}> because ${botLabel} is missing ${missing} ${permissionLabel}. ` +
+                `Allow it in the temporary channel's permissions, or in your TempVoice category/template. ` +
+                "For music playback, also allow **Speak**. Administrator permission is not required."
+        );
+        error.code = "VOICE_CHANNEL_PERMISSION_MISSING";
+        throw error;
+    }
+
+    return botMember;
+}
+
 async function ensurePlayer(client, {
     guildId,
     voiceChannelId,
+    voiceChannelObject = null,
     textChannelId,
     volume = 75,
     requesterId = null,
@@ -159,6 +222,12 @@ async function ensurePlayer(client, {
         throw new Error(`Bot ${client.botId} is already occupied in voice channel ${currentOccupied.id}`);
     }
 
+    const botMember = await getVoiceChannelBotMember(
+        client,
+        guildId,
+        voiceChannelId,
+        voiceChannelObject
+    );
     let player = client.riffy.players.get(guildId);
     if (player) {
         if (restoringSession) player._restoringSession = true;
@@ -176,13 +245,7 @@ async function ensurePlayer(client, {
             if (voiceChannelId) coordinator.setSessionDJ(voiceChannelId, requesterId);
         }
 
-        let me = client.guilds.cache.get(guildId)?.members?.me;
-        if (!me) {
-            try {
-                me = await client.guilds.cache.get(guildId)?.members?.fetchMe();
-            } catch {}
-        }
-        if (voiceChannelId && me?.voice?.channelId !== voiceChannelId) {
+        if (voiceChannelId && botMember.voice?.channelId !== voiceChannelId) {
             player.connect({
                 guildId,
                 voiceChannel: voiceChannelId,
@@ -279,7 +342,7 @@ function clearPlayerIdleTimeout(player, guildData) {
 
 function setPlayerIdleTimeout(client, player, guildData, reason = "idle") {
     if (!player || !client) return;
-    if (guildData?.twentyFourSeven) return;
+    if (guildData?.twentyFourSeven && reason !== "empty") return;
 
     clearPlayerIdleTimeout(player, guildData);
 
@@ -310,7 +373,7 @@ function setPlayerIdleTimeout(client, player, guildData, reason = "idle") {
 
         // If reason is empty, verify channel is still empty of non-bot humans
         if (reason === "empty") {
-            const humans = currentVoiceChannel.members.filter((m) => !m.user?.bot);
+            const humans = currentVoiceChannel.members.filter(isHumanVoiceMember);
             if (humans.size > 0) {
                 console.log(`[euphire] Humans returned to VC ${player.voiceChannel}, cancelling empty-leave`);
                 player.idleTimeout = null;
@@ -325,7 +388,7 @@ function setPlayerIdleTimeout(client, player, guildData, reason = "idle") {
             try {
                 const leaveMsg =
                     reason === "empty"
-                        ? "No members left in voice channel, leaving :wave:"
+                        ? "No human members left in voice channel, leaving :wave:"
                         : "No tracks have been playing for the past 3 minutes, leaving :wave:";
                 const leaveEmbed = new EmbedBuilder().setColor(0xED4245).setDescription(leaveMsg);
                 await targetLeaveChannel.send({ embeds: [leaveEmbed] });

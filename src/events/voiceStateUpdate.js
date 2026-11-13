@@ -3,6 +3,7 @@ const { createChatPlayIdleContainer } = require("../utils/components");
 const { EmbedBuilder, MessageFlags } = require("discord.js");
 const { addSessionParticipant, removeSessionParticipant } = require("../utils/mongoStats");
 const coordinator = require("../utils/mongoCoordinator");
+const { isHumanVoiceMember } = require("../utils/voiceMembers");
 const {
     JOCKIE_BOT_IDS,
     consumeJockieCommand,
@@ -112,7 +113,7 @@ module.exports = {
 
         // Track shared listening: user joins/leaves voice channel while music is playing
         const member = newState.member || oldState.member;
-        if (oldState.id !== client.user.id && !member?.user?.bot) {
+        if (oldState.id !== client.user.id && isHumanVoiceMember(member)) {
             let player = client.riffy?.players?.get(oldState.guild.id);
             if (!player) {
                 for (const c of coordinator.getAllClients()) {
@@ -171,7 +172,7 @@ module.exports = {
             if (leftChannel) {
                 const sessionOwner = coordinator.resolveSessionOwner(oldState.channelId, oldState.guild);
                 if (sessionOwner) {
-                    const humans = leftChannel.members.filter((m) => !m.user?.bot);
+                    const humans = leftChannel.members.filter(isHumanVoiceMember);
                     if (humans.size === 0) {
                         const targetClient = coordinator.getClient(sessionOwner) || client;
                         const player = targetClient.riffy?.players?.get(oldState.guild.id);
@@ -186,7 +187,7 @@ module.exports = {
         }
 
         // Check if a human rejoined a voice channel with a bot (cancel empty timeout)
-        if (newState.channelId && newState.channelId !== oldState.channelId && !member?.user?.bot) {
+        if (newState.channelId && newState.channelId !== oldState.channelId && isHumanVoiceMember(member)) {
             const joinedChannel = newState.guild.channels.cache.get(newState.channelId);
             if (joinedChannel) {
                 const sessionOwner = coordinator.resolveSessionOwner(newState.channelId, newState.guild);
@@ -261,8 +262,8 @@ module.exports = {
                 const textChannelId =
                     player?.assignedTextChannel ||
                     player?.textChannel ||
-                    guildData.playerChannelId ||
-                    guildData.chatPlayChannelId;
+                    player?.playerChannelId ||
+                    coordinator.getSessionChannel(oldState.channelId);
                 let textChannel = textChannelId
                     ? targetClient.channels.cache.get(textChannelId)
                     : null;

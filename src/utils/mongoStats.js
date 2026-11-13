@@ -174,11 +174,8 @@ async function endSession(sessionId, completedNaturally = false, actualPositionM
         durationMs = Math.max(0, Math.floor(durationMs));
         console.log(`[euphire] endSession: session base duration: ${durationMs} ms for session: ${sessionId}, track: "${session.trackTitle}"`);
         
-        // Collect all listeners: session owner (DJ) + all VC participants
+        // Only credit users who were tracked as participants in the voice channel.
         const listeners = new Map();
-        if (session.userId && durationMs >= 5000) {
-            listeners.set(session.userId, durationMs);
-        }
 
         const participants = await db.collection('sessionParticipants')
             .find({ sessionId })
@@ -202,7 +199,7 @@ async function endSession(sessionId, completedNaturally = false, actualPositionM
 
         console.log(`[euphire] endSession: committing stats for ${listeners.size} listener(s):`, [...listeners.entries()]);
 
-        // Commit stats for EVERY listener (requester + everyone in VC)
+        // Commit stats for every tracked listener.
         for (const [listenerId, listenerMs] of listeners.entries()) {
             if (listenerMs < 5000) continue;
 

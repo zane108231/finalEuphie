@@ -87,6 +87,7 @@ module.exports = {
             const player = await ensurePlayer(assignedClient, {
                 guildId: guildId,
                 voiceChannelId: voiceChannelId,
+                voiceChannelObject: member.voice.channel,
                 textChannelId: interaction.channel.id,
                 volume: guildData.volume,
                 requesterId: interaction.user.id,
@@ -110,7 +111,12 @@ module.exports = {
         } catch (error) {
             console.error("[euphire] Join error:", error);
             await coordinator.releaseBot(voiceChannelId);
-            return interaction.editReply({ content: "❌ Could not join your voice channel." });
+            return interaction.editReply({
+                content:
+                    error.code === "VOICE_CHANNEL_PERMISSION_MISSING"
+                        ? error.message
+                        : "❌ Could not join your voice channel.",
+            });
         }
     },
 };

@@ -7,6 +7,67 @@ const { getGuildData } = require("./mongoGuildData");
 
 const PERSIST_DEBOUNCE_MS = 300;
 const CHECKPOINT_INTERVAL_MS = 10000;
+const RESUME_TIMEOUT_MS = 3 * 60 * 1000;
+
+function clearResumeTimeout(player) {
+    if (!player?._resumeTimeout) return;
+    clearTimeout(player._resumeTimeout);
+    player._resumeTimeout = null;
+}
+
+function scheduleResumeTimeout(client, player, snapshot) {
+    clearResumeTimeout(player);
+
+    const timeout = setTimeout(async () => {
+        if (player._resumeTimeout !== timeout) return;
+        player._resumeTimeout = null;
+
+        const pendingSnapshot = player._pendingResumeSnapshot;
+        if (!pendingSnapshot) return;
+
+        console.log(
+            `[euphire] Resume window expired for guild ${snapshot.guildId}; releasing bot ${client.botId}`
+        );
+
+        try {
+            await removeSavedSession(snapshot.guildId);
+        } catch (error) {
+            console.error(
+                `[euphire] Could not delete expired playback session for guild ${snapshot.guildId}:`,
+                error.message
+            );
+        }
+
+        const { markIntentionalDisconnect } = require("./playback");
+        markIntentionalDisconnect(player);
+        try {
+            await player.destroy();
+        } catch (error) {
+            console.warn(
+                `[euphire] Could not destroy expired resume player for guild ${snapshot.guildId}:`,
+                error.message
+            );
+        }
+
+        const voiceChannelId =
+            pendingSnapshot.voiceChannelId || player.voiceChannel;
+        if (voiceChannelId) {
+            try {
+                await coordinator.releaseBot(voiceChannelId);
+            } catch (error) {
+                console.error(
+                    `[euphire] Could not release expired voice session ${voiceChannelId}:`,
+                    error.message
+                );
+            }
+        }
+
+        delete player._pendingResumeSnapshot;
+    }, RESUME_TIMEOUT_MS);
+
+    player._resumeTimeout = timeout;
+    timeout.unref?.();
+}
 
 function getRequesterId(track) {
     const requester = track?.info?.requester;
@@ -327,6 +388,7 @@ async function prepareSnapshot(client, snapshot) {
         ...snapshot,
         currentTrackRestored,
     };
+    scheduleResumeTimeout(client, player, snapshot);
     console.log(
         `[euphire] Prepared saved session for guild ${snapshot.guildId} (${resolvedTracks.length} track(s)); waiting for the owner to resume`
     );
@@ -373,7 +435,7 @@ async function sendResumePrompt(client, snapshot) {
         .setColor(config.accentColor || 0x2b2d31)
         .setDescription(
             `<@${userId}> I’m back in your voice channel with your saved music session ready. ` +
-            "Use `e!resumesession` when you’re ready to continue."
+            "Use `e!resumesession` within 3 minutes to continue, or I’ll leave so I’m available for someone else."
         );
 
     const payload = {
@@ -493,6 +555,7 @@ async function resumeGuildSession(guildId, userId) {
             ? existingPlayer
             : await prepareSnapshot(client, snapshot);
     const pendingSnapshot = player._pendingResumeSnapshot || snapshot;
+    clearResumeTimeout(player);
     await player.play();
 
     if (
