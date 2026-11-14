@@ -15,6 +15,54 @@ function clearResumeTimeout(player) {
     player._resumeTimeout = null;
 }
 
+async function sendResumeExpiredNotice(client, snapshot) {
+    const guild = client.guilds.cache.get(snapshot.guildId);
+    if (!guild) {
+        console.warn(
+            `[euphire] Could not notify guild ${snapshot.guildId} that the resume window expired: guild is unavailable`
+        );
+        return;
+    }
+
+    let channel = snapshot.textChannelId
+        ? guild.channels.cache.get(snapshot.textChannelId)
+        : null;
+    if (!channel && snapshot.textChannelId) {
+        try {
+            channel = await guild.channels.fetch(snapshot.textChannelId);
+        } catch (error) {
+            console.warn(
+                `[euphire] Could not fetch the resume text channel for guild ${snapshot.guildId}:`,
+                error.message
+            );
+        }
+    }
+    if (!channel?.send) channel = guild.systemChannel;
+    if (!channel?.send) {
+        console.warn(
+            `[euphire] Could not notify guild ${snapshot.guildId} that the resume window expired: no sendable channel`
+        );
+        return;
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(0xed4245)
+        .setTitle("Resume window expired")
+        .setDescription(
+            "The 3-minute window to run `e!resumesession` has expired. " +
+                "I’m leaving the voice channel now so I’m available for someone else."
+        );
+
+    try {
+        await channel.send({ embeds: [embed] });
+    } catch (error) {
+        console.error(
+            `[euphire] Could not send the expired resume notice in channel ${channel.id}:`,
+            error.message
+        );
+    }
+}
+
 function scheduleResumeTimeout(client, player, snapshot) {
     clearResumeTimeout(player);
 
@@ -40,6 +88,8 @@ function scheduleResumeTimeout(client, player, snapshot) {
                 error.message
             );
         }
+
+        await sendResumeExpiredNotice(client, pendingSnapshot);
 
         const { markIntentionalDisconnect } = require("./playback");
         markIntentionalDisconnect(player);
@@ -451,14 +501,16 @@ async function sendResumePrompt(client, snapshot) {
 
     const embed = new EmbedBuilder()
         .setColor(config.accentColor || 0x2b2d31)
+        .setTitle("Your saved session is ready")
         .setDescription(
-            `<@${userId}> I’m back in your voice channel with your saved music session ready. ` +
-            "Use `e!resumesession` within 3 minutes to continue, or I’ll leave so I’m available for someone else."
+            "I’m back in your voice channel with your saved music session ready. " +
+                "Run **`e!resumesession`** within 3 minutes to continue, or I’ll leave so I’m available for someone else."
         );
 
     const payload = {
+        content: `<@${userId}>`,
         embeds: [embed],
-        allowedMentions: { users: [String(userId)] },
+        allowedMentions: { parse: [], users: [String(userId)] },
     };
 
     try {

@@ -560,15 +560,6 @@ async function handleButtonInteraction(client, interaction) {
                     console.error("[euphire] Failed to edit ChatPlay message on stop:", err.message);
                 }
             } else if (guildData.playerMessageId && guildData.playerChannelId) {
-                try {
-                    const channel = client.channels.cache.get(guildData.playerChannelId);
-                    if (channel) {
-                        const msg = await channel.messages.fetch(guildData.playerMessageId);
-                        await msg.delete();
-                    }
-                } catch (err) {
-                    // message already deleted
-                }
                 guildData.playerMessageId = null;
                 guildData.playerChannelId = null;
             }

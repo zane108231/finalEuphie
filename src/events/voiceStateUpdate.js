@@ -359,16 +359,9 @@ async function resetChatPlayIfActive(client, guildId) {
             // message may have been deleted
         }
     }
-    // Delete regular /play player message
+    // Keep regular /play announcements in channel history.
     else if (guildData.playerMessageId && guildData.playerChannelId) {
-        try {
-            const channel = client.channels.cache.get(guildData.playerChannelId);
-            if (channel) {
-                const msg = await channel.messages.fetch(guildData.playerMessageId);
-                await msg.delete();
-            }
-        } catch (err) {
-            // message already deleted
-        }
+        guildData.playerMessageId = null;
+        guildData.playerChannelId = null;
     }
 }

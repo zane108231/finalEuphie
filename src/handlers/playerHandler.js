@@ -286,8 +286,6 @@ async function announceNowPlaying(client, player, track, guildData) {
     );
     if (!newMsg) return;
 
-    const oldId = player.playerMessageId || guildData.playerMessageId;
-    const oldChannelId = player.playerChannelId || guildData.playerChannelId;
     player.playerMessageId = newMsg.id;
     player.playerChannelId = channel.id;
     player.assignedTextChannel = channel.id;
@@ -297,11 +295,6 @@ async function announceNowPlaying(client, player, track, guildData) {
     guildData.playerMessageId = newMsg.id;
     guildData.playerChannelId = channel.id;
     guildData.cannotSendPlayer = false;
-
-    if (oldId && oldId !== newMsg.id) {
-        const oldChannel = client.channels.cache.get(oldChannelId) || channel;
-        oldChannel?.messages?.fetch(oldId).then((msg) => msg.delete()).catch(() => {});
-    }
 
     if (guildData.chatPlayChannelId && guildData.chatPlayMessageId) {
         try {
@@ -894,16 +887,7 @@ function setupPlayerHandler(client) {
                     }
                 }
             } else {
-                // For regular play: delete this player's old now-playing card, then announce idle to its assigned channel
-                const oldMsgId = player.playerMessageId || (assignedChannel && guildData.playerChannelId === assignedChannel.id ? guildData.playerMessageId : null);
-                if (assignedChannel && oldMsgId) {
-                    try {
-                        const msg = await assignedChannel.messages.fetch(oldMsgId);
-                        await msg.delete();
-                    } catch (err) {
-                        // message already deleted
-                    }
-                }
+                // Keep the started-playing announcement in channel history.
                 player.playerMessageId = null;
                 if (assignedChannel && guildData.playerChannelId === assignedChannel.id) {
                     guildData.playerMessageId = null;
@@ -955,19 +939,7 @@ function setupPlayerHandler(client) {
         clearUpdateInterval(guildData);
         stopVoiceChannelMonitoring(player.guildId);
         
-        // Delete regular player message if it exists
-        if (guildData.playerMessageId && guildData.playerChannelId) {
-            try {
-                const channel = client.channels.cache.get(guildData.playerChannelId);
-                if (channel) {
-                    const msg = await channel.messages.fetch(guildData.playerMessageId);
-                    await msg.delete();
-                }
-            } catch (err) {
-                // message already deleted
-            }
-        }
-        
+        // Keep started-playing announcements in channel history.
         guildData.playerMessageId = null;
         guildData.playerChannelId = null;
         guildData.suggestions = [];

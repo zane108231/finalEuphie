@@ -194,7 +194,7 @@ async function handleSetBackground(interaction, client, args) {
     const embed = new EmbedBuilder()
         .setColor(config.accentColor || 0x2b2d31)
         .setTitle("✅ Profile Background Updated")
-        .setDescription("Your custom background has been saved permanently to MongoDB! It will stay consistent across all bots and servers. Use `e!profile` to view your new card.")
+        .setDescription("Your custom background has been permanently saved! Use `e!profile` to view your card.")
         .setImage("attachment://background-preview.png");
 
     return interaction.editReply({ embeds: [embed], files: [attachmentPreview] });

@@ -341,15 +341,18 @@ async function searchYoutubeTrack(riffy, track, requester, node) {
     const queries = [
         [title, author, "lyrics"],
         [author, title, "lyrics"],
-        [title, author, "lyric video"],
+        [title, author],
         [author, title],
     ].map((parts) => parts.filter(Boolean).join(" "));
+    const lyricQueryCount = 2;
     const titleWords = normalizeSearchText(title).split(" ").filter(Boolean);
     const artistWords = normalizeSearchText(author || "").split(" ").filter(Boolean);
-    let bestLyricMatch = null;
-    let bestLyricScore = Number.NEGATIVE_INFINITY;
+    let bestLyricsMatch = null;
+    let bestLyricsScore = Number.NEGATIVE_INFINITY;
+    let bestFallbackMatch = null;
+    let bestFallbackScore = Number.NEGATIVE_INFINITY;
 
-    for (const query of [...new Set(queries)]) {
+    for (const [queryIndex, query] of [...new Set(queries)].entries()) {
         const response = await makeSearchRequest(
             requestNode,
             `/${requestNode.rest.version}/loadtracks?identifier=${encodeURIComponent(`ytsearch:${query}`)}`
@@ -359,39 +362,47 @@ async function searchYoutubeTrack(riffy, track, requester, node) {
         for (const candidate of result.tracks) {
             const candidateTitle = normalizeSearchText(candidate.info.title || "");
             const candidateAuthor = normalizeSearchText(candidate.info.author || "");
-            const combined = `${candidateTitle} ${candidateAuthor}`;
+            const candidateTitleWords = new Set(candidateTitle.split(" "));
+            const candidateWords = new Set(
+                `${candidateTitle} ${candidateAuthor}`.split(" ")
+            );
             const matchedTitleWords = titleWords.filter((word) =>
-                candidateTitle.includes(word)
+                candidateTitleWords.has(word)
             ).length;
             const titleMatch = titleWords.length
                 ? matchedTitleWords / titleWords.length
                 : 0;
             const artistMatch = artistWords.length
-                ? artistWords.filter((word) => combined.includes(word)).length /
+                ? artistWords.filter((word) => candidateWords.has(word)).length /
                   artistWords.length
                 : 1;
             if (titleMatch < 0.6 || (artistWords.length && artistMatch < 0.5)) {
                 continue;
             }
 
-            if (!isEligibleYoutubeLyricsTitle(candidate.info?.title)) continue;
-
             const isOfficialAudio = /\bofficial audio\b/.test(candidateTitle);
-
+            const hasLyricsLabel = isEligibleYoutubeLyricsTitle(
+                candidate.info?.title
+            );
             const score =
                 titleMatch * 10 +
                 artistMatch * 4 +
                 (isOfficialAudio ? 4 : 0);
-            if (score > bestLyricScore) {
-                bestLyricMatch = candidate;
-                bestLyricScore = score;
+            if (hasLyricsLabel && score > bestLyricsScore) {
+                bestLyricsMatch = candidate;
+                bestLyricsScore = score;
+            } else if (!hasLyricsLabel && score > bestFallbackScore) {
+                bestFallbackMatch = candidate;
+                bestFallbackScore = score;
             }
         }
 
-        if (bestLyricMatch) return bestLyricMatch;
+        if (queryIndex === lyricQueryCount - 1 && bestLyricsMatch) {
+            return bestLyricsMatch;
+        }
     }
 
-    return null;
+    return bestLyricsMatch || bestFallbackMatch;
 }
 
 async function resolveSpotifyTrackAudio(riffy, track, requester) {
