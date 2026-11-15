@@ -20,6 +20,9 @@ euphire is a ChatPlay-focused Discord music bot that also operates like a standa
 This repository includes Docker support for simple deployment.
 
 1. Copy `.env.example` to `.env` and fill in your `BOT_TOKEN` and `CLIENT_ID`.
+   The four existing bot tokens (`BOT_1_TOKEN` through `BOT_3_TOKEN`) are also required.
+   To enable the two additional bots, add `BOT_4_TOKEN` and `BOT_5_TOKEN`; either can
+   be left unset to keep that bot disabled. Invite each enabled bot to the server.
 2. Start the bot:
    ```bash
    docker compose up --build -d
@@ -51,7 +54,9 @@ docker compose logs -f euphire
    ```bash
    npm install
    ```
-3. Copy `.env.example` to `.env` and fill in your `BOT_TOKEN` and `CLIENT_ID`.
+3. Copy `.env.example` to `.env` and fill in `BOT_TOKEN`, `BOT_1_TOKEN` through
+   `BOT_3_TOKEN`, and `CLIENT_ID`. To enable the optional fifth and sixth bots,
+   also set `BOT_4_TOKEN` and `BOT_5_TOKEN`.
 4. Copy `config.example.js` to `config.js` and configure your Lavalink server details.
    - Update `host`, `port`, `password`, and `secure` in `config.js`.
    - Ensure your Lavalink server is running and reachable.

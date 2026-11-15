@@ -7,7 +7,7 @@ const {
     ButtonStyle,
 } = require("discord.js");
 const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
-const { startIfIdle, ensurePlayer, setAnnounceChannel, getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
+const { startIfIdle, ensurePlayer, setAnnounceChannel, buildNoBotsAvailablePayload } = require("../utils/playback");
 const coordinator = require("../utils/mongoCoordinator");
 const { getPrefix } = require("../utils/prefixStore");
 const { replyNotInVoiceChannel } = require("../utils/permissions");
@@ -371,12 +371,8 @@ module.exports = {
                     if (!anyAvailable) {
                         // No bots available - show error
                         console.log(`[euphire] NO bots available in guild ${interaction.guild.id}, showing error message`);
-                        const embed = new EmbedBuilder()
-                            .setColor(config.accentColor || 0x2b2d31)
-                            .setDescription("There are no more bots available in this server, looks like I am popular 😎\nYou can invite 2 more bots for free! Check out the invite command for more information.");
-
                         return interaction.reply({
-                            embeds: [embed],
+                            ...buildNoBotsAvailablePayload(),
                             flags: MessageFlags.Ephemeral,
                         });
                     } else {

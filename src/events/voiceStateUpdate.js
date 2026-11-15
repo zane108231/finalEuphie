@@ -3,7 +3,10 @@ const { createChatPlayIdleContainer } = require("../utils/components");
 const { EmbedBuilder, MessageFlags } = require("discord.js");
 const { addSessionParticipant, removeSessionParticipant } = require("../utils/mongoStats");
 const coordinator = require("../utils/mongoCoordinator");
-const { isHumanVoiceMember } = require("../utils/voiceMembers");
+const {
+    getHumanVoiceMembers,
+    isHumanVoiceMember,
+} = require("../utils/voiceMembers");
 const {
     JOCKIE_BOT_IDS,
     consumeJockieCommand,
@@ -167,13 +170,20 @@ module.exports = {
         }
 
         // Check if all non-bot humans left a voice channel containing a bot
-        if (oldState.channelId && oldState.channelId !== newState.channelId) {
+        if (
+            oldState.channelId &&
+            oldState.channelId !== newState.channelId &&
+            isHumanVoiceMember(member)
+        ) {
             const leftChannel = oldState.guild.channels.cache.get(oldState.channelId);
             if (leftChannel) {
                 const sessionOwner = coordinator.resolveSessionOwner(oldState.channelId, oldState.guild);
                 if (sessionOwner) {
-                    const humans = leftChannel.members.filter(isHumanVoiceMember);
-                    if (humans.size === 0) {
+                    const humans = getHumanVoiceMembers(
+                        oldState.guild,
+                        leftChannel
+                    ).filter((human) => human.id !== oldState.id);
+                    if (humans.length === 0) {
                         const targetClient = coordinator.getClient(sessionOwner) || client;
                         const player = targetClient.riffy?.players?.get(oldState.guild.id);
                         if (player) {
@@ -194,10 +204,25 @@ module.exports = {
                 if (sessionOwner) {
                     const targetClient = coordinator.getClient(sessionOwner) || client;
                     const player = targetClient.riffy?.players?.get(newState.guild.id);
-                    if (player && (player.playing || (player.queue && player.queue.length > 0))) {
+                    if (player) {
                         const guildData = getGuildData(newState.guild.id);
-                        const { clearPlayerIdleTimeout } = require("../utils/playback");
+                        const {
+                            clearPlayerIdleTimeout,
+                            setPlayerIdleTimeout,
+                        } = require("../utils/playback");
                         clearPlayerIdleTimeout(player, guildData);
+                        if (
+                            !player.playing &&
+                            !player.paused &&
+                            !(player.queue && player.queue.length > 0)
+                        ) {
+                            setPlayerIdleTimeout(
+                                targetClient,
+                                player,
+                                guildData,
+                                "idle"
+                            );
+                        }
                     }
                 }
             }

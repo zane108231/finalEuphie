@@ -10,7 +10,10 @@ const { scheduleStatusUpdate } = require("../services/statusMonitor");
 const {
     markPlayerIdle,
     markIntentionalDisconnect,
+    clearPlayerIdleTimeout,
+    setPlayerIdleTimeout,
 } = require("../utils/playback");
+const { getHumanVoiceMembers } = require("../utils/voiceMembers");
 const { resetSessionPermissions } = require("../utils/permissions");
 const { startSession, updateSessionProgress, endSession, addSessionParticipant, removeSessionParticipant } = require("../utils/mongoStats");
 const { startPlayerTracking, stopPlayerTracking } = require("../utils/modelMilestones");
@@ -31,6 +34,8 @@ const lastfmLoginPromptCooldowns = new Map();
 const LASTFM_LOGIN_PROMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 const UPDATE_INTERVAL_MS = 30 * 1000; // Increased to 30 seconds to reduce CPU load
+const voiceChannelMonitoringIntervals = new Map();
+const VOICE_CHANNEL_MONITOR_INTERVAL_MS = 5000;
 
 function queueTrackErrorNotice(channel, guildId) {
     let notice = trackErrorNotices.get(guildId);
@@ -85,6 +90,30 @@ async function sendQueueEmptyNotice(channel, guildId, voiceChannelId, client) {
         await channel.send({ embeds: [embed] });
     } catch {
         // Channel has no send permission
+    }
+}
+
+async function sendQueueLoopRestartNotice(client, player, guildData) {
+    const sessionOwner = coordinator.resolveSessionOwner(
+        player.voiceChannel,
+        client.guilds.cache.get(player.guildId)
+    );
+    if (sessionOwner && sessionOwner !== client.botId) return;
+
+    const channel = resolveAssignedChannel(client, player, guildData);
+    if (!channel) return;
+
+    const embed = new EmbedBuilder()
+        .setColor(0xed4245)
+        .setDescription("There are no more tracks, starting over 🔁");
+
+    try {
+        await channel.send({ embeds: [embed] });
+    } catch (error) {
+        console.error(
+            `[euphire] Failed to send queue-loop restart notice in guild ${player.guildId}:`,
+            error.message
+        );
     }
 }
 
@@ -229,6 +258,45 @@ function buildStartedPlayingEmbed(client, player, track) {
         .setDescription(
             `${getSpotifyEmoji(client, player)} Started playing ${trackText}`
         );
+}
+
+function shouldAnnounceTrackStart(player, track) {
+    const trackId =
+        track?.info?.identifier ||
+        track?.info?.uri ||
+        track?.track;
+    if (!trackId) return true;
+
+    const isRepeatedTrackLoop =
+        player.loop === "track" &&
+        player._lastAnnouncedTrackId === trackId;
+    player._lastAnnouncedTrackId = trackId;
+    return !isRepeatedTrackLoop;
+}
+
+function isQueueLoopRestart(player, track, payload) {
+    if (
+        player?.loop !== "queue" ||
+        player._clearQueueRequested ||
+        String(payload?.reason || "").toLowerCase() !== "finished" ||
+        !track
+    ) {
+        return false;
+    }
+
+    const queuedTracks = Array.from(player.queue || []);
+    if (!queuedTracks.length) return false;
+
+    if (!(player._queueLoopPlayedTracks instanceof Set)) {
+        player._queueLoopPlayedTracks = new Set();
+    }
+    player._queueLoopPlayedTracks.add(track);
+
+    const cycleFinished = queuedTracks.every((queuedTrack) =>
+        player._queueLoopPlayedTracks.has(queuedTrack)
+    );
+    if (cycleFinished) player._queueLoopPlayedTracks.clear();
+    return cycleFinished;
 }
 
 async function sendNowPlayingPayload(channel, client, player, track) {
@@ -418,8 +486,7 @@ function setupPlayerHandler(client) {
                 });
             guildData.cannotSendPlayer = false;
             player.skipVotes = new Set();
-            const { clearPlayerIdleTimeout } = require("../utils/playback");
-            clearPlayerIdleTimeout(player, guildData);
+            clearPlayerIdleTimeout(player, guildData, true);
 
             // Fallback: if previous track session was still open (e.g. trackEnd didn't fire), commit it naturally now!
             if (player.currentSessionId) {
@@ -537,16 +604,6 @@ function setupPlayerHandler(client) {
                 console.error("[Last.fm] Failed to update now playing:", err.message);
             }
 
-            // Clear any idle timeout
-            if (player.idleTimeout) {
-                clearTimeout(player.idleTimeout);
-                player.idleTimeout = null;
-            }
-            if (guildData.idleTimeout) {
-                clearTimeout(guildData.idleTimeout);
-                guildData.idleTimeout = null;
-            }
-
             // Clear queue end time since a new track started
             guildData.queueEndTime = null;
 
@@ -618,7 +675,9 @@ function setupPlayerHandler(client) {
             // Start voice channel monitoring
             startVoiceChannelMonitoring(client, player.guildId);
 
-            await announceNowPlaying(client, player, track, guildData);
+            if (shouldAnnounceTrackStart(player, track)) {
+                await announceNowPlaying(client, player, track, guildData);
+            }
 
             // Auto-update interval disabled (no progress bars)
         } catch (error) {
@@ -631,12 +690,14 @@ function setupPlayerHandler(client) {
     client.riffy.on("trackEnd", async (player, track, payload) => {
         try {
             const guildData = getGuildData(player.guildId);
+            const queueRestarting = isQueueLoopRestart(player, track, payload);
             await stopPlayerTracking(player, true);
 
             console.log("[euphire] trackEnd event fired for track:", track?.info?.title);
             let queueUpdated = false;
             if (
                 guildData.removeAfterPlayed &&
+                player.loop !== "queue" &&
                 String(payload?.reason || "").toLowerCase() === "finished" &&
                 track?.info?.uri
             ) {
@@ -654,6 +715,9 @@ function setupPlayerHandler(client) {
             }
             if (queueUpdated) {
                 await require("../utils/playbackRecovery").persistPlayer(client, player);
+            }
+            if (queueRestarting) {
+                await sendQueueLoopRestartNotice(client, player, guildData);
             }
 
             // Last.fm scrobbling: scrobble for all users in VC
@@ -1034,17 +1098,65 @@ function setupPlayerHandler(client) {
 }
 
 /**
- * Start monitoring voice channel for auto-pause/resume functionality
+ * Start monitoring voice-channel occupancy for automatic disconnects.
  */
 function startVoiceChannelMonitoring(client, guildId) {
-    // Music continues playing even when voice channel is empty
+    const player = client.riffy?.players?.get(guildId);
+    if (!player?.voiceChannel) return;
+
+    const monitorKey = `${client.botId}:${guildId}`;
+    if (voiceChannelMonitoringIntervals.has(monitorKey)) return;
+
+    checkVoiceChannelState(client, guildId);
+    const interval = setInterval(() => {
+        try {
+            checkVoiceChannelState(client, guildId);
+        } catch (error) {
+            console.error(
+                `[euphire] Voice-channel monitor failed for ${guildId}:`,
+                error.message
+            );
+        }
+    }, VOICE_CHANNEL_MONITOR_INTERVAL_MS);
+    interval.unref?.();
+    voiceChannelMonitoringIntervals.set(monitorKey, { guildId, interval });
+    getGuildData(guildId).voiceStateTimeout = interval;
 }
 
 /**
- * Check voice channel state and pause/resume accordingly
+ * Keep the empty-channel leave timer active during playback.
  */
 function checkVoiceChannelState(client, guildId) {
-    // Music continues playing even when voice channel is empty
+    const player = client.riffy?.players?.get(guildId);
+    if (!player?.voiceChannel) {
+        stopVoiceChannelMonitoring(guildId);
+        return;
+    }
+
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return;
+
+    const voiceChannel =
+        guild.channels.cache.get(player.voiceChannel) ||
+        { id: player.voiceChannel };
+    const humans = getHumanVoiceMembers(guild, voiceChannel);
+    const guildData = getGuildData(guildId);
+
+    if (humans.length === 0) {
+        setPlayerIdleTimeout(client, player, guildData, "empty");
+        return;
+    }
+
+    if (player._idleTimeoutReason === "empty") {
+        clearPlayerIdleTimeout(player, guildData);
+        if (
+            !player.playing &&
+            !player.paused &&
+            !(player.queue && player.queue.length > 0)
+        ) {
+            setPlayerIdleTimeout(client, player, guildData, "idle");
+        }
+    }
 }
 
 /**
@@ -1052,10 +1164,21 @@ function checkVoiceChannelState(client, guildId) {
  */
 function stopVoiceChannelMonitoring(guildId) {
     const guildData = getGuildData(guildId);
+    for (const [monitorKey, monitor] of voiceChannelMonitoringIntervals) {
+        if (monitor.guildId !== guildId) continue;
+        clearInterval(monitor.interval);
+        voiceChannelMonitoringIntervals.delete(monitorKey);
+    }
     if (guildData.voiceStateTimeout) {
-        clearTimeout(guildData.voiceStateTimeout);
+        clearInterval(guildData.voiceStateTimeout);
         guildData.voiceStateTimeout = null;
     }
 }
 
-module.exports = { setupPlayerHandler, startVoiceChannelMonitoring, stopVoiceChannelMonitoring };
+module.exports = {
+    setupPlayerHandler,
+    startVoiceChannelMonitoring,
+    stopVoiceChannelMonitoring,
+    shouldAnnounceTrackStart,
+    isQueueLoopRestart,
+};

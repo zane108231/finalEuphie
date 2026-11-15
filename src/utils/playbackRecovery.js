@@ -1,4 +1,5 @@
 const { EmbedBuilder, PermissionFlagsBits } = require("discord.js");
+const { Track } = require("riffy/build/structures/Track");
 const config = require("../../config");
 const { getDB } = require("./database");
 const { waitForNode } = require("./playback");
@@ -136,16 +137,27 @@ function normalizeLoopMode(mode) {
     return mode === "track" || mode === "queue" ? mode : "none";
 }
 
-function serializeTrack(track) {
+function serializeTrack(track, includeEncoded = true) {
     const info = track?.info;
-    if (!info?.uri) return null;
+    if (!info || (!info.uri && !track?.track)) return null;
 
     return {
-        uri: info.uri,
+        ...(includeEncoded && track.track ? { encoded: track.track } : {}),
+        uri: info.uri || null,
         identifier: info.identifier || null,
         title: info.title || "Unknown",
         author: info.author || "Unknown Artist",
         length: Number(info.length) || 0,
+        sourceName: info.sourceName || null,
+        isSeekable: Boolean(info.seekable),
+        isStream: Boolean(info.stream),
+        isrc: info.isrc || null,
+        spotifyTitle: info.spotifyTitle || null,
+        spotifyArtist: info.spotifyArtist || null,
+        spotifyUrl: info.spotifyUrl || null,
+        spotifyArtworkUrl: info.spotifyArtworkUrl || null,
+        displayTitle: info.displayTitle || null,
+        displayAuthor: info.displayAuthor || null,
         requesterId: getRequesterId(track),
         requesterName: getRequesterName(track),
     };
@@ -162,7 +174,7 @@ async function removeSavedSession(guildId, botId) {
 
 async function saveRecentlyPlayedTrack(track) {
     const requesterId = getRequesterId(track);
-    const savedTrack = serializeTrack(track);
+    const savedTrack = serializeTrack(track, false);
     if (!requesterId || !savedTrack) return;
 
     await getDB().collection("recentTracks").updateOne(
@@ -175,12 +187,9 @@ async function saveRecentlyPlayedTrack(track) {
     );
 }
 
-async function persistPlayer(client, player) {
-    if (!client || !player?.guildId) return;
-    if (player._restoringSession || player._pendingResumeSnapshot) return;
-
+async function writePlayerSnapshot(client, player) {
     const queue = Array.from(player.queue || [])
-        .map(serializeTrack)
+        .map((track) => serializeTrack(track))
         .filter(Boolean);
     const current =
         player.playing || player.paused ? serializeTrack(player.current) : null;
@@ -224,6 +233,34 @@ async function persistPlayer(client, player) {
             { $set: snapshot },
             { upsert: true }
         );
+}
+
+function persistPlayer(client, player) {
+    if (
+        !client ||
+        !player?.guildId ||
+        player._restoringSession ||
+        player._pendingResumeSnapshot
+    ) {
+        return Promise.resolve();
+    }
+
+    const previous = player._sessionPersistPromise || Promise.resolve();
+    const persistence = previous
+        .catch((error) => {
+            console.error(
+                `[euphire] Previous playback persistence failed for ${player.guildId}:`,
+                error.message
+            );
+        })
+        .then(() => writePlayerSnapshot(client, player));
+
+    player._sessionPersistPromise = persistence;
+    return persistence.finally(() => {
+        if (player._sessionPersistPromise === persistence) {
+            player._sessionPersistPromise = null;
+        }
+    });
 }
 
 function schedulePersist(client, player) {
@@ -285,6 +322,49 @@ async function checkpointAllClients(clients) {
 }
 
 function resolveSavedTrack(client, savedTrack) {
+    if (savedTrack?.encoded) {
+        const nodes = [...client.riffy.nodeMap.values()];
+        const node = nodes.find((candidate) => candidate.connected) || nodes[0];
+        if (!node) {
+            throw new Error("No Lavalink node is available to restore a saved track.");
+        }
+
+        const requester = savedTrack.requesterId
+            ? {
+                  id: savedTrack.requesterId,
+                  username: savedTrack.requesterName || "Unknown",
+              }
+            : null;
+        const track = new Track(
+            {
+                encoded: savedTrack.encoded,
+                info: {
+                    identifier: savedTrack.identifier,
+                    isSeekable: savedTrack.isSeekable,
+                    author: savedTrack.author,
+                    length: savedTrack.length,
+                    isStream: savedTrack.isStream,
+                    position: 0,
+                    title: savedTrack.title,
+                    uri: savedTrack.uri,
+                    sourceName: savedTrack.sourceName,
+                    isrc: savedTrack.isrc,
+                },
+            },
+            requester,
+            node
+        );
+        Object.assign(track.info, {
+            spotifyTitle: savedTrack.spotifyTitle,
+            spotifyArtist: savedTrack.spotifyArtist,
+            spotifyUrl: savedTrack.spotifyUrl,
+            spotifyArtworkUrl: savedTrack.spotifyArtworkUrl,
+            displayTitle: savedTrack.displayTitle,
+            displayAuthor: savedTrack.displayAuthor,
+        });
+        return Promise.resolve(track);
+    }
+
     if (!savedTrack?.uri) return Promise.resolve(null);
 
     return client.riffy
@@ -678,6 +758,7 @@ module.exports = {
     installPlayerPersistence,
     persistPlayer,
     removeSavedSession,
+    resolveSavedTrack,
     resumeGuildSession,
     restoreClientSessions,
     saveRecentlyPlayedTrack,

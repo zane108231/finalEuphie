@@ -1,13 +1,22 @@
 const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js");
-const { ensurePlayer, getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
+const {
+    ensurePlayer,
+    getOccupiedVoiceChannel,
+    buildNoBotsAvailablePayload,
+} = require("../utils/playback");
 const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const coordinator = require("../utils/mongoCoordinator");
-const config = require("../../config");
 
 function createSummonedEmbed() {
     return new EmbedBuilder()
         .setColor(0x57F287) // Discord Green
         .setDescription("I have been summoned");
+}
+
+function createAlreadyHereEmbed() {
+    return new EmbedBuilder()
+        .setColor(0xed4245)
+        .setDescription("I am already here 👋");
 }
 
 module.exports = {
@@ -29,22 +38,16 @@ module.exports = {
         const voiceChannelId = member.voice.channel.id;
         const guildId = interaction.guild.id;
 
-        // Check if ANY bot is already physically in this voice channel
+        // Check all Euphie clients so the response is consistent regardless of bot routing.
         for (const c of coordinator.getAllClients()) {
             const targetGuild = c.guilds?.cache?.get(guildId) || interaction.guild;
-            const otherMe = targetGuild?.members?.cache?.get(c.user?.id);
-            if (otherMe?.voice?.channelId === voiceChannelId) {
+            const occupied = getOccupiedVoiceChannel(targetGuild, c);
+            if (occupied?.id === voiceChannelId) {
                 return interaction.reply({
-                    embeds: [createSummonedEmbed()],
+                    embeds: [createAlreadyHereEmbed()],
                     flags: MessageFlags.Ephemeral,
                 });
             }
-        }
-
-        // Check if THIS specific bot is already occupied in a DIFFERENT voice channel in THIS guild
-        const occupiedInGuild = getOccupiedVoiceChannel(interaction.guild, client);
-        if (occupiedInGuild && occupiedInGuild.id !== voiceChannelId) {
-            return replyAlreadyInUse(interaction, occupiedInGuild);
         }
 
         // Determine which bot to use:
@@ -56,12 +59,8 @@ module.exports = {
             if (availableBotId) {
                 assignedClient = coordinator.getClient(availableBotId);
             } else {
-                // No bots available in this guild!
-                const embed = new EmbedBuilder()
-                    .setColor(config.accentColor || 0x2b2d31)
-                    .setDescription("There are no more bots available in this server, looks like I am popular 😎\nYou can invite 2 more bots for free! Check out the invite command for more information.");
                 return interaction.reply({
-                    embeds: [embed],
+                    ...buildNoBotsAvailablePayload(),
                     flags: MessageFlags.Ephemeral,
                 });
             }

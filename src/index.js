@@ -262,7 +262,7 @@ function createBotInstance(token, botId) {
 // MULTI-BOT CONFIGURATION
 // ======================================================
 
-const botConfigs = [
+const requiredBotConfigs = [
     {
         id: "euphie_main",
         token: process.env.BOT_TOKEN,
@@ -289,11 +289,31 @@ const botConfigs = [
     },
 ];
 
+const optionalBotConfigs = [
+    {
+        id: "euphie_4",
+        token: process.env.BOT_4_TOKEN,
+        name: "Euphie (4)",
+        isPrimary: false,
+    },
+    {
+        id: "euphie_5",
+        token: process.env.BOT_5_TOKEN,
+        name: "Euphie (5)",
+        isPrimary: false,
+    },
+];
+
+const botConfigs = [
+    ...requiredBotConfigs,
+    ...optionalBotConfigs.filter((bot) => Boolean(bot.token)),
+];
+
 // ======================================================
 // VALIDATE BOT TOKENS
 // ======================================================
 
-const missingTokens = botConfigs.filter((bot) => !bot.token);
+const missingTokens = requiredBotConfigs.filter((bot) => !bot.token);
 
 if (missingTokens.length > 0) {
     console.error("[euphire] Missing bot tokens:");

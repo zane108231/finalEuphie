@@ -54,7 +54,7 @@ module.exports = {
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setLabel("Support Developer")
-                .setURL("https://dsc.gg/duxceriao")
+                .setURL("https://discord.gg/7pYJFydEDy")
                 .setStyle(ButtonStyle.Link)
         );
 

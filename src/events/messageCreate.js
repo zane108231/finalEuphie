@@ -55,16 +55,16 @@ async function respondToEuphieMention(client, message) {
         return false;
     }
 
-    const supportUrl = "https://discord.gg/dmj8YpKn3F";
+    const supportUrl = "https://discord.gg/7pYJFydEDy";
     const embed = new EmbedBuilder()
         .setColor(0xf4a7c7)
         .setDescription(
             "Basic commands\n" +
-                `[\`m!play\`](${supportUrl}) - Play a track by link or search term\n` +
-                `[\`m!skip\`](${supportUrl}) - Skip the current track\n` +
-                `[\`m!leave\`](${supportUrl}) - Make the bot leave the voice channel\n` +
-                `[\`m!setup\`](${supportUrl}) - Helps you setup certain bot features\n\n` +
-                "Use the [`m!help`] command for more commands.\n\n" +
+                `[\`e!play\`](${supportUrl}) - Play a track by link or search term\n` +
+                `[\`e!skip\`](${supportUrl}) - Skip the current track\n` +
+                `[\`e!leave\`](${supportUrl}) - Make the bot leave the voice channel\n` +
+                `[\`e!setup\`](${supportUrl}) - Helps you setup certain bot features\n\n` +
+                "Use the [`e!help`] command for more commands.\n\n" +
                 "Support Server\n" +
                 `Join our [Support Server](${supportUrl}) if you need help, want to get information about updates and issues or want to engage in community discussions with the developers!`
         );

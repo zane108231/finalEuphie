@@ -68,14 +68,14 @@ function buildStatusContainer(client, { interactive = true, showSupportButton = 
         ? [
               new ButtonBuilder()
                   .setLabel("Support Server")
-                  .setURL("https://dsc.gg/duxceriao")
+                  .setURL("https://discord.gg/7pYJFydEDy")
                   .setStyle(ButtonStyle.Link)
           ]
         : [
               new ButtonBuilder()
                   .setLabel("Report Issue")
                   .setEmoji("🐛")
-                  .setURL("https://dsc.gg/duxceriao")
+                  .setURL("https://discord.gg/7pYJFydEDy")
                   .setStyle(ButtonStyle.Link)
           ];
 

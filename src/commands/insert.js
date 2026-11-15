@@ -1,9 +1,13 @@
 const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js");
-const { getOccupiedVoiceChannel, replyAlreadyInUse } = require("../utils/playback");
 const {
-    createNoBotInVoiceEmbed,
-    replyNotInVoiceChannel,
-} = require("../utils/permissions");
+    ensurePlayer,
+    markIntentionalDisconnect,
+    replyNoBotsAvailable,
+    setAnnounceChannel,
+    startIfIdle,
+} = require("../utils/playback");
+const { replyNotInVoiceChannel } = require("../utils/permissions");
+const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const coordinator = require("../utils/mongoCoordinator");
 const { searchYoutubeTrack, resolveSpotifyTrackAudio } = require("../utils/search");
 const { getSpotifyPlaylistMetadata } = require("../utils/spotifyPlaylistSearch");
@@ -73,35 +77,75 @@ module.exports = {
         }
 
         const voiceChannelId = member.voice.channel.id;
-        
-        // Get the session owner for this voice channel
-        const sessionOwner = coordinator.resolveSessionOwner(voiceChannelId, interaction.guild);
+        const guildId = interaction.guild.id;
+        let sessionOwner = coordinator.resolveSessionOwner(
+            voiceChannelId,
+            interaction.guild
+        );
+        let newlyReserved = false;
         if (!sessionOwner) {
-            return interaction.reply({
-                embeds: [createNoBotInVoiceEmbed()],
-                flags: MessageFlags.Ephemeral,
-            });
-        }
-        
-        // Get the correct riffy instance
-        const targetRiffy = sessionOwner ? coordinator.getRiffy(sessionOwner) : client.riffy;
-        
-        const player = targetRiffy.players.get(interaction.guild.id);
-        if (!player || !player.current) {
-            return interaction.reply({
-                content: "❌ Nothing is playing right now.",
-                flags: MessageFlags.Ephemeral,
-            });
+            const availableBotId = coordinator.getAvailableBotInGuild(guildId);
+            if (!availableBotId) {
+                return replyNoBotsAvailable(interaction);
+            }
+
+            const reserved = await coordinator.reserveSpecificBot(
+                voiceChannelId,
+                interaction.user.id,
+                availableBotId,
+                guildId
+            );
+            if (reserved) {
+                sessionOwner = availableBotId;
+                newlyReserved = true;
+            } else {
+                sessionOwner = coordinator.resolveSessionOwner(
+                    voiceChannelId,
+                    interaction.guild
+                );
+                if (!sessionOwner) {
+                    return interaction.reply({
+                        content: "❌ Failed to allocate a bot. Please try again.",
+                        flags: MessageFlags.Ephemeral,
+                    });
+                }
+            }
         }
 
-        const occupied = getOccupiedVoiceChannel(interaction.guild, client);
-        if (occupied && occupied.id !== member.voice.channel.id) {
-            return replyAlreadyInUse(interaction, occupied);
-        }
+        const targetClient = coordinator.getClient(sessionOwner) || client;
+        const targetRiffy = targetClient.riffy;
+        let player = targetRiffy.players.get(guildId) || null;
+        const existingPlayer = player;
+        const guildData = getGuildData(guildId);
+        const releaseNewReservation = async () => {
+            if (!newlyReserved) return;
+            if (!existingPlayer && player) {
+                markIntentionalDisconnect(player);
+                player.destroy();
+            }
+            await coordinator.releaseBot(voiceChannelId);
+        };
 
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
+        let playerReady = false;
         try {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            player = await ensurePlayer(targetClient, {
+                guildId,
+                voiceChannelId,
+                voiceChannelObject: member.voice.channel,
+                textChannelId: interaction.channel.id,
+                volume: guildData.volume,
+                requesterId: interaction.user.id,
+            });
+            playerReady = true;
+            guildData.cannotSendPlayer = false;
+            setAnnounceChannel(player, guildData, interaction.channel.id);
+            await coordinator.markBotActive(sessionOwner, voiceChannelId);
+            coordinator.setSessionChannel(voiceChannelId, interaction.channel.id);
+            coordinator.setSessionDJ(voiceChannelId, interaction.user.id);
+            guildData.djOwnerId = interaction.user.id;
+            await saveGuildData(guildId, guildData);
+
             const result = await targetRiffy.resolve({
                 query: query.trim(),
                 source: "spsearch",
@@ -171,6 +215,7 @@ module.exports = {
                 }
 
                 if (!playableTracks.length) {
+                    await releaseNewReservation();
                     return interaction.editReply({
                         content: tracks?.length
                             ? `❌ None of the ${tracks.length} playlist tracks could be matched to playable audio.`
@@ -179,10 +224,14 @@ module.exports = {
                 }
 
                 const existingQueue = [...player.queue];
-                const etaMs = Math.max(
-                    0,
-                    (player.current.info?.length || 0) - (player.position || 0)
-                );
+                const wasIdle = !player.playing && !player.paused;
+                const etaMs = wasIdle
+                    ? 0
+                    : Math.max(
+                          0,
+                          (player.current?.info?.length || 0) -
+                              (player.position || 0)
+                      );
                 player.queue.clear();
                 for (const track of playableTracks) {
                     player.queue.add(track);
@@ -190,6 +239,7 @@ module.exports = {
                 for (const track of existingQueue) {
                     player.queue.add(track);
                 }
+                await startIfIdle(player);
 
                 const playlistName =
                     spotifyPlaylistMetadata?.name ||
@@ -225,7 +275,7 @@ module.exports = {
                     .setColor(0x2b2d31)
                     .setAuthor({
                         name: "Added Playlist",
-                        iconURL: client.user?.displayAvatarURL?.(),
+                        iconURL: targetClient.user?.displayAvatarURL?.(),
                     })
                     .addFields(
                         {
@@ -250,12 +300,12 @@ module.exports = {
                         },
                         {
                             name: "Position in upcoming",
-                            value: "Next",
+                            value: wasIdle ? "Now" : "Next",
                             inline: true,
                         },
                         {
                             name: "Position in queue",
-                            value: "2",
+                            value: wasIdle ? "1" : "2",
                             inline: true,
                         }
                     )
@@ -282,6 +332,7 @@ module.exports = {
             ) {
                 let track = tracks[0];
                 if (!track) {
+                    await releaseNewReservation();
                     return interaction.editReply({
                         embeds: [buildSearchErrorEmbed()],
                     });
@@ -293,6 +344,7 @@ module.exports = {
                     interaction.user
                 );
                 if (!track) {
+                    await releaseNewReservation();
                     return interaction.editReply({
                         embeds: [buildSearchErrorEmbed()],
                     });
@@ -307,14 +359,19 @@ module.exports = {
                 applySpotifyTrackMetadata(track, spotifyMetadata);
                 track.info.requester = interaction.user;
 
-                // Insert at position 1 (right after currently playing track)
+                const wasIdle = !player.playing && !player.paused;
                 const queueArray = [...player.queue];
                 player.queue.clear();
-                player.queue.add(track); // Add inserted track first (next in queue)
-                queueArray.forEach(t => player.queue.add(t)); // Add remaining tracks
+                player.queue.add(track);
+                queueArray.forEach((queuedTrack) => player.queue.add(queuedTrack));
 
-                // Compute time remaining on current track
-                const etaMs = Math.max(0, (player.current.info?.length || 0) - (player.position || 0));
+                const etaMs = wasIdle
+                    ? 0
+                    : Math.max(
+                          0,
+                          (player.current?.info?.length || 0) -
+                              (player.position || 0)
+                      );
                 const eta = formatDurationLeadingZero(etaMs);
                 const trackLength = formatDurationLeadingZero(track.info.length || 0);
                 const displayName = getSpotifyTrackDisplayName(track);
@@ -335,8 +392,8 @@ module.exports = {
                         { name: "Estimated time until played", value: eta, inline: true },
                         { name: "Track Length", value: trackLength, inline: true },
                         { name: "\u200b", value: "\u200b", inline: true },
-                        { name: "Position in upcoming", value: "Next", inline: true },
-                        { name: "Position in queue", value: "2", inline: true },
+                        { name: "Position in upcoming", value: wasIdle ? "Now" : "Next", inline: true },
+                        { name: "Position in queue", value: wasIdle ? "1" : "2", inline: true },
                         { name: "\u200b", value: "\u200b", inline: true }
                     )
                     .setFooter({
@@ -348,14 +405,25 @@ module.exports = {
                     embed.setThumbnail(thumbnail);
                 }
 
+                await startIfIdle(player);
                 await sendPublicEmbed(interaction, embed);
             } else {
+                await releaseNewReservation();
                 return interaction.editReply({
                     embeds: [buildSearchErrorEmbed()],
                 });
             }
         } catch (error) {
+            await releaseNewReservation();
             console.error("[euphire] Insert error:", error);
+            if (error?.code === "VOICE_CHANNEL_PERMISSION_MISSING") {
+                return interaction.editReply({ content: error.message });
+            }
+            if (!playerReady) {
+                return interaction.editReply({
+                    content: "❌ Could not join your voice channel. Try again in a moment.",
+                });
+            }
             return interaction.editReply({
                 embeds: [buildSearchErrorEmbed()],
             });

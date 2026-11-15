@@ -1,7 +1,7 @@
 const { MessageFlags } = require("discord.js");
 const { getGuildData } = require("../utils/mongoGuildData");
 const { createChatPlayLoadingContainer } = require("../utils/components");
-const { startIfIdle, ensurePlayer, getOccupiedVoiceChannel, buildAlreadyInUsePayload } = require("../utils/playback");
+const { startIfIdle, ensurePlayer, getOccupiedVoiceChannel, buildNoBotsAvailablePayload } = require("../utils/playback");
 const { createNotInVoiceChannelEmbed } = require("../utils/permissions");
 
 async function sendChatPlayFeedback(channel, content, timeoutMs = 5000) {
@@ -71,12 +71,12 @@ async function handleChatPlayMessage(client, message) {
     const occupied = getOccupiedVoiceChannel(message.guild, client);
     if (occupied && occupied.id !== voiceChannel.id) {
         try {
-            const { containerPayload, embedPayload } = buildAlreadyInUsePayload(occupied);
-            await message.channel.send(containerPayload).catch(async () => {
-                await message.channel.send(embedPayload);
-            });
-        } catch {
-            // ignore
+            await message.channel.send(buildNoBotsAvailablePayload());
+        } catch (error) {
+            console.error(
+                `[euphire] Failed to send the no-bots-available message in channel ${message.channel.id}:`,
+                error.message
+            );
         }
         return true;
     }

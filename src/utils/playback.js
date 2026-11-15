@@ -1,12 +1,8 @@
 const {
-    MessageFlags,
-    ContainerBuilder,
-    TextDisplayBuilder,
     EmbedBuilder,
     PermissionFlagsBits,
 } = require("discord.js");
-const config = require("../../config");
-const { isHumanVoiceMember } = require("./voiceMembers");
+const { getHumanVoiceMembers } = require("./voiceMembers");
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -101,52 +97,25 @@ function getOccupiedVoiceChannel(guild, client) {
     return null;
 }
 
-function buildAlreadyInUsePayload(channel) {
-    const name = channel?.name || "a voice channel";
-    const mention = channel?.id ? `<#${channel.id}>` : name;
-    const container = new ContainerBuilder();
-    container.addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(
-            `### 🎧 I am already in this ${name}\n\n` +
-            "**Channel**\n" +
-            `-# ${mention}\n\n` +
-            "**Why**\n" +
-            "-# First come, first served. Join that voice channel, or wait until I leave."
-        )
-    );
+function buildNoBotsAvailablePayload() {
+    const embed = new EmbedBuilder()
+        .setColor(0xed4245)
+        .setDescription(
+            "There are no more bots available in this server, looks like I am popular😎\n\n" +
+                "**You can invite 3 more bots for free! Check out the invite command for more information.**"
+        );
+
     return {
-        containerPayload: {
-            components: [container],
-            flags: MessageFlags.IsComponentsV2,
-        },
-        embedPayload: {
-            embeds: [
-                new EmbedBuilder()
-                    .setColor(config.accentColor || 0x2b2d31)
-                    .setTitle(`🎧 I am already in this ${name}`)
-                    .setDescription(`I'm already connected to ${mention}. Join that channel, or wait until I'm not in a voice channel.`)
-            ],
-        },
+        embeds: [embed],
     };
 }
 
-async function replyAlreadyInUse(interaction, channel) {
-    const { containerPayload, embedPayload } = buildAlreadyInUsePayload(channel);
-    try {
-        if (interaction.deferred || interaction.replied) {
-            return await interaction.editReply(containerPayload);
-        }
-        return await interaction.reply(containerPayload);
-    } catch {
-        try {
-            if (interaction.deferred || interaction.replied) {
-                return await interaction.editReply(embedPayload);
-            }
-            return await interaction.reply(embedPayload);
-        } catch {
-            return null;
-        }
+async function replyNoBotsAvailable(interaction) {
+    const payload = buildNoBotsAvailablePayload();
+    if (interaction.deferred || interaction.replied) {
+        return interaction.editReply(payload);
     }
+    return interaction.reply(payload);
 }
 
 async function getVoiceChannelBotMember(
@@ -297,7 +266,7 @@ function setAnnounceChannel(player, guildData, channelId) {
 async function startIfIdle(player) {
     if (!player) return player;
     if (player._pendingResumeSnapshot) return player;
-    clearPlayerIdleTimeout(player);
+    clearPlayerIdleTimeout(player, null, true);
     if (player.playing || player.paused) return player;
     if (!player.queue.length) return player;
 
@@ -329,12 +298,17 @@ function setVolumeSafe(player, volume) {
     );
 }
 
-function clearPlayerIdleTimeout(player, guildData) {
-    if (player?.idleTimeout) {
-        clearTimeout(player.idleTimeout);
+function clearPlayerIdleTimeout(player, guildData, preserveEmpty = false) {
+    const keepEmptyTimeout =
+        preserveEmpty &&
+        player?._idleTimeoutReason === "empty" &&
+        Boolean(player.idleTimeout);
+    if (player && !keepEmptyTimeout) {
+        if (player.idleTimeout) clearTimeout(player.idleTimeout);
         player.idleTimeout = null;
+        player._idleTimeoutReason = null;
     }
-    if (guildData?.idleTimeout) {
+    if (guildData?.idleTimeout && !keepEmptyTimeout) {
         clearTimeout(guildData.idleTimeout);
         guildData.idleTimeout = null;
     }
@@ -342,16 +316,25 @@ function clearPlayerIdleTimeout(player, guildData) {
 
 function setPlayerIdleTimeout(client, player, guildData, reason = "idle") {
     if (!player || !client) return;
-    if (guildData?.twentyFourSeven && reason !== "empty") return;
+    if (player._idleTimeoutReason === "empty") {
+        if (player.idleTimeout) return;
+        player._idleTimeoutReason = null;
+    }
 
     clearPlayerIdleTimeout(player, guildData);
 
     console.log(`[euphire] Setting 3-minute idle timeout (${reason}) for bot ${client.botId} in VC ${player.voiceChannel}`);
 
+    player._idleTimeoutReason = reason;
     player.idleTimeout = setTimeout(async () => {
+        const clearScheduledTimeout = () => {
+            player.idleTimeout = null;
+            player._idleTimeoutReason = null;
+        };
+
         // If track is playing or queue is not empty, do not leave (unless empty VC reason)
         if (reason !== "empty" && (player.playing || (player.queue && player.queue.length > 0))) {
-            player.idleTimeout = null;
+            clearScheduledTimeout();
             return;
         }
 
@@ -363,32 +346,85 @@ function setPlayerIdleTimeout(client, player, guildData, reason = "idle") {
         console.log(`[euphire] Idle timeout reached (${reason}), bot ${client.botId} leaving voice channel ${player.voiceChannel}`);
 
         // Check if bot is still in the voice channel
-        const botMember = client.guilds.cache.get(player.guildId)?.members?.cache?.get(client.user.id);
-        const currentVoiceChannel = botMember?.voice?.channel;
+        const guild = client.guilds.cache.get(player.guildId);
+        const botVoiceState = guild?.voiceStates?.cache?.get(client.user.id);
+        const botMember =
+            guild?.members?.cache?.get(client.user.id) || guild?.members?.me;
+        const currentVoiceChannelId =
+            botVoiceState?.channelId || botMember?.voice?.channelId;
 
-        if (!currentVoiceChannel || currentVoiceChannel.id !== player.voiceChannel) {
-            player.idleTimeout = null;
+        if (currentVoiceChannelId && currentVoiceChannelId !== player.voiceChannel) {
+            console.log(
+                `[euphire] Idle timeout for ${player.guildId} found bot in ${currentVoiceChannelId}, not ${player.voiceChannel}; cancelling`
+            );
+            clearScheduledTimeout();
             return;
         }
 
+        let currentVoiceChannel =
+            guild?.channels?.cache?.get(player.voiceChannel) || null;
+        if (!currentVoiceChannel && guild?.channels?.fetch) {
+            try {
+                currentVoiceChannel = await guild.channels.fetch(
+                    player.voiceChannel
+                );
+            } catch (error) {
+                console.error(
+                    `[euphire] Could not fetch voice channel ${player.voiceChannel} at idle timeout:`,
+                    error.message
+                );
+            }
+        }
+
         // If reason is empty, verify channel is still empty of non-bot humans
-        if (reason === "empty") {
-            const humans = currentVoiceChannel.members.filter(isHumanVoiceMember);
-            if (humans.size > 0) {
+        if (reason === "empty" && currentVoiceChannel) {
+            const humans = getHumanVoiceMembers(guild, currentVoiceChannel);
+            if (humans.length > 0) {
                 console.log(`[euphire] Humans returned to VC ${player.voiceChannel}, cancelling empty-leave`);
-                player.idleTimeout = null;
+                clearScheduledTimeout();
                 return;
             }
         }
 
         // Send leaving message to text channel
         const channelId = player.assignedTextChannel || player.textChannel || guildData.playerChannelId;
-        const targetLeaveChannel = channelId ? client.channels.cache.get(channelId) : null;
+        let targetLeaveChannel = channelId
+            ? client.channels.cache.get(channelId)
+            : null;
+        if (!targetLeaveChannel && channelId) {
+            try {
+                targetLeaveChannel = await client.channels.fetch(channelId);
+            } catch (error) {
+                console.error(
+                    `[euphire] Could not fetch leave-notice channel ${channelId}:`,
+                    error.message
+                );
+            }
+        }
+
+        const currentSessionId =
+            player.currentSessionId || guildData.currentSessionId;
+        const listenedMs =
+            player.position ||
+            (player.sessionStartedAt ? Date.now() - player.sessionStartedAt : 0);
+        player.currentSessionId = null;
+        guildData.currentSessionId = null;
+        markIntentionalDisconnect(player);
+        try {
+            player.destroy();
+        } catch (error) {
+            console.error(
+                `[euphire] Failed to destroy idle player in guild ${player.guildId}:`,
+                error.message
+            );
+        }
+        clearScheduledTimeout();
+
         if (targetLeaveChannel) {
             try {
                 const leaveMsg =
                     reason === "empty"
-                        ? "No human members left in voice channel, leaving :wave:"
+                        ? "No one has been listening for the past 3 minutes, leaving 👋"
                         : "No tracks have been playing for the past 3 minutes, leaving :wave:";
                 const leaveEmbed = new EmbedBuilder().setColor(0xED4245).setDescription(leaveMsg);
                 await targetLeaveChannel.send({ embeds: [leaveEmbed] });
@@ -398,21 +434,32 @@ function setPlayerIdleTimeout(client, player, guildData, reason = "idle") {
         }
 
         // End active session if any
-        if (player.currentSessionId) {
-            const listenedMs = player.position || (player.sessionStartedAt ? Date.now() - player.sessionStartedAt : 0);
-            await endSession(player.currentSessionId, false, listenedMs).catch(() => {});
-            player.currentSessionId = null;
+        if (currentSessionId) {
+            try {
+                await endSession(currentSessionId, false, listenedMs);
+            } catch (error) {
+                console.error(
+                    `[euphire] Failed to end session ${currentSessionId} during idle leave:`,
+                    error.message
+                );
+            }
         }
 
         // Release bot from coordinator
-        markIntentionalDisconnect(player);
-        if (player.voiceChannel) {
-            await coordinator.releaseBot(player.voiceChannel);
-        }
-        if (coordinator.botSessions.has(client.botId)) {
-            for (const vcId of [...coordinator.botSessions.get(client.botId)]) {
-                await coordinator.releaseBot(vcId);
+        try {
+            if (player.voiceChannel) {
+                await coordinator.releaseBot(player.voiceChannel);
             }
+            if (coordinator.botSessions.has(client.botId)) {
+                for (const vcId of [...coordinator.botSessions.get(client.botId)]) {
+                    await coordinator.releaseBot(vcId);
+                }
+            }
+        } catch (error) {
+            console.error(
+                `[euphire] Failed to release bot ${client.botId} after idle leave:`,
+                error.message
+            );
         }
         coordinator.markBotAvailable(client.botId);
         guildData.djOwnerId = null;
@@ -421,12 +468,14 @@ function setPlayerIdleTimeout(client, player, guildData, reason = "idle") {
             guildData.playerMessageId = null;
             guildData.playerChannelId = null;
         }
-        await saveGuildData(player.guildId, guildData);
-
         try {
-            player.destroy();
-        } catch {}
-        player.idleTimeout = null;
+            await saveGuildData(player.guildId, guildData);
+        } catch (error) {
+            console.error(
+                `[euphire] Failed to save guild state after idle leave ${player.guildId}:`,
+                error.message
+            );
+        }
     }, 3 * 60 * 1000); // 3 minutes
 }
 
@@ -443,6 +492,6 @@ module.exports = {
     clearPlayerIdleTimeout,
     waitForNode,
     getOccupiedVoiceChannel,
-    replyAlreadyInUse,
-    buildAlreadyInUsePayload,
+    replyNoBotsAvailable,
+    buildNoBotsAvailablePayload,
 };

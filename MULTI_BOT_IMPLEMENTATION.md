@@ -2,7 +2,7 @@
 
 ## Overview
 
-This implementation adds a Jockie Music-style multi-bot system to Euphie, allowing 4 separate Discord bot identities to work together as a coordinated music system.
+This implementation adds a Jockie Music-style multi-bot system to Euphie, allowing up to 6 separate Discord bot identities to work together as a coordinated music system. The first 4 are required; the final 2 are optional.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ This implementation adds a Jockie Music-style multi-bot system to Euphie, allowi
 
 The core of the multi-bot system is the Bot Coordinator, which manages:
 
-- **4 Discord Bot Clients**: Euphie, Euphie (1), Euphie (2), Euphie (3)
+- **Up to 6 Discord Bot Clients**: Euphie, Euphie (1) through Euphie (5)
 - **Session Ownership**: Maps voice channels to bot IDs
 - **Bot Availability**: Tracks which bots are available, reserved, or active
 - **Atomic Allocation**: Prevents race conditions when allocating bots
@@ -32,7 +32,7 @@ The core of the multi-bot system is the Bot Coordinator, which manages:
 
 ### Modified Files
 
-1. **`src/index.js`** - Initializes 4 Discord clients with shared Riffy infrastructure
+1. **`src/index.js`** - Initializes configured Discord clients with shared Riffy infrastructure
 2. **`src/handlers/commandHandler.js`** - Added command routing to prevent duplicate responses
 3. **`src/events/interactionCreate.js`** - Added slash command routing
 4. **`src/commands/play.js`** - Added bot reservation and session ownership logic
@@ -45,7 +45,7 @@ The core of the multi-bot system is the Bot Coordinator, which manages:
 11. **`src/handlers/playerHandler.js`** - Added bot release on player disconnect and queue end
 12. **`src/handlers/buttonHandler.js`** - Updated to use session owner's Riffy and release on stop
 13. **`src/events/voiceStateUpdate.js`** - Added bot release on voice disconnect
-14. **`.env.example`** - Added environment variable configuration for 4 bot tokens
+14. **Optional bot slots** - `BOT_4_TOKEN` and `BOT_5_TOKEN` add up to two clients
 
 ## Environment Variables
 
@@ -55,10 +55,14 @@ You need to configure the following environment variables in your `.env` file:
 # Primary Bot Token (Euphie)
 BOT_TOKEN=your_bot_token_here
 
-# Secondary Bot Tokens (Euphie (1), Euphie (2), Euphie (3))
+# Required secondary bot tokens (Euphie (1), Euphie (2), Euphie (3))
 BOT_1_TOKEN=your_bot_1_token_here
 BOT_2_TOKEN=your_bot_2_token_here
 BOT_3_TOKEN=your_bot_3_token_here
+
+# Optional additional bots (Euphie (4), Euphie (5))
+BOT_4_TOKEN=your_bot_4_token_here
+BOT_5_TOKEN=your_bot_5_token_here
 
 # Discord Client ID (for slash command deployment)
 CLIENT_ID=your_client_id_here
@@ -70,11 +74,13 @@ STATUS_WEBHOOK_URL=your_status_webhook_url_here
 ### Getting Bot Tokens
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
-2. Create 4 separate applications:
+2. Create up to 6 separate applications:
    - Euphie (Primary)
    - Euphie (1)
    - Euphie (2)
    - Euphie (3)
+   - Euphie (4) (optional)
+   - Euphie (5) (optional)
 3. For each application:
    - Enable the "Bot" feature
    - Copy the bot token
@@ -83,12 +89,7 @@ STATUS_WEBHOOK_URL=your_status_webhook_url_here
 
 ## Bot Priority Order
 
-The system allocates bots in the following priority order:
-
-1. **Euphie (1)** - First to be allocated for new sessions
-2. **Euphie (2)** - Second priority
-3. **Euphie (3)** - Third priority
-4. **Euphie** (Primary) - Last resort for music, but handles all general commands
+The coordinator registers the primary bot first, followed by enabled secondary bots in numeric order. Configured bots are available for session allocation; general commands are handled by the primary Euphie bot.
 
 ## Command Routing
 
@@ -135,13 +136,14 @@ A session ends and the bot is released when:
 
 ### Manual Testing Scenarios
 
-1. **First Session**: Run `e!play <song>` in Voice Channel A → Euphie (1) should join
-2. **Second Session**: While Euphie (1) is playing, run `e!play <song>` in Voice Channel B → Euphie (2) should join
-3. **Third Session**: With two bots occupied, start a third session → Euphie (3) should join
-4. **Fourth Session**: With three bots occupied, start a fourth session → Euphie should join
-5. **Session Controls**: Run `e!skip`, `e!pause`, `e!queue` in each session → Only the correct bot should respond
-6. **General Commands**: Run `e!help` → Only Euphie should respond
-7. **Session Cleanup**: Stop a session → Bot should become available for new sessions
+1. **First Session**: Run `e!play <song>` in Voice Channel A → Euphie should join
+2. **Second Session**: While Euphie is playing, run `e!play <song>` in Voice Channel B → Euphie (1) should join
+3. **Third Session**: With two bots occupied, start a third session → Euphie (2) should join
+4. **Fourth Session**: With three bots occupied, start a fourth session → Euphie (3) should join
+5. **Fifth/Sixth Sessions**: If configured, the additional Euphie bots should join
+6. **Session Controls**: Run `e!skip`, `e!pause`, `e!queue` in each session → Only the correct bot should respond
+7. **General Commands**: Run `e!help` → Only Euphie should respond
+8. **Session Cleanup**: Stop a session → Bot should become available for new sessions
 
 ### Expected Behavior
 
@@ -183,10 +185,10 @@ The coordinator uses a simple spinlock for atomic allocation. For production use
 
 ## Resource Considerations
 
-Running 4 Discord clients increases:
-- **Memory Usage**: Approximately 4x the memory of a single bot
+Running up to 6 Discord clients increases:
+- **Memory Usage**: Approximately 6x the memory of a single bot at maximum
 - **API Rate Limits**: Each bot has its own rate limit bucket (generally positive)
-- **WebSocket Connections**: 4 concurrent connections to Discord
+- **WebSocket Connections**: Up to 6 concurrent connections to Discord
 
 The system is designed to share a single Lavalink server, so no additional infrastructure is needed there.
 
@@ -204,7 +206,7 @@ Potential improvements for the multi-bot system:
 
 This implementation provides a complete, working multi-bot music system that:
 
-- ✅ Supports 4 separate Discord bot identities
+- ✅ Supports up to 6 separate Discord bot identities
 - ✅ Shares one codebase and configuration
 - ✅ Automatically allocates bots to new sessions
 - ✅ Routes commands to the correct session owner

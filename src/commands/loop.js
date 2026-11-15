@@ -4,7 +4,7 @@ const { requireMusicAction } = require("../utils/permissions");
 const { persistPlayer } = require("../utils/playbackRecovery");
 
 module.exports = {
-    aliases: ["repeat", "loopq"],
+    aliases: ["repeat", "loopq", "loopqueue"],
     data: new SlashCommandBuilder()
         .setName("loop")
         .setDescription("Toggle track or queue loop mode")
@@ -31,10 +31,16 @@ module.exports = {
         const rawArgs = interaction.args || [];
         const rawFirst = (rawArgs[0] || "").toLowerCase().trim();
         const modeOpt = (interaction.options?.getString("mode") || "").toLowerCase().trim();
+        const rawCommand = interaction.message?.content
+            ?.trim()
+            .split(/\s+/)[0]
+            ?.toLowerCase();
 
-        // Check if queue loop was requested (e!loopq, e!loop q, e!loop queue, /loop mode:queue)
+        // Check if queue loop was requested (e!loopq, e!loopqueue, e!loop q, e!loop queue, /loop mode:queue)
         const isQueueTarget =
             interaction.commandName === "loopq" ||
+            rawCommand?.endsWith("loopq") ||
+            rawCommand?.endsWith("loopqueue") ||
             rawFirst === "q" ||
             rawFirst === "queue" ||
             modeOpt === "queue";
@@ -77,6 +83,11 @@ module.exports = {
 
         // Apply new loop state
         player.setLoop(newMode);
+        if (newMode === "queue") {
+            player._queueLoopPlayedTracks = new Set();
+        } else {
+            delete player._queueLoopPlayedTracks;
+        }
         guildData.loop = newMode;
         await saveGuildData(guildId, guildData);
         await persistPlayer(client, player);
