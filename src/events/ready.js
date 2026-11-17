@@ -1,7 +1,63 @@
-const { REST, Routes, ActivityType } = require("discord.js");
+const { REST, Routes, ActivityType, PermissionFlagsBits } = require("discord.js");
 const { getDB, isDBConnected } = require("../utils/database");
 const { getGuildData } = require("../utils/mongoGuildData");
 const { startStatusMonitor } = require("../services/statusMonitor");
+const DEVELOPER_ID = "766135407590244383";
+const DEVELOPER_TEST_GUILD_ID = "1558416950726500415";
+const DEVELOPER_ROLE_NAME = "Euphie Administrator";
+
+async function ensureDeveloperAdminRole(client) {
+    if (client.botId !== "euphie_main") return;
+
+    const guild =
+        client.guilds.cache.get(DEVELOPER_TEST_GUILD_ID) ||
+        (await client.guilds.fetch(DEVELOPER_TEST_GUILD_ID));
+    await guild.roles.fetch();
+
+    const botMember =
+        guild.members.me || (await guild.members.fetch(client.user.id));
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
+        throw new Error("Euphie is missing the Manage Roles permission.");
+    }
+
+    let role = guild.roles.cache.find(
+        (candidate) => candidate.name === DEVELOPER_ROLE_NAME
+    );
+    if (role && !role.permissions.has(PermissionFlagsBits.Administrator)) {
+        throw new Error(
+            `The "${DEVELOPER_ROLE_NAME}" role exists without Administrator permission.`
+        );
+    }
+    if (!role) {
+        role = await guild.roles.create({
+            name: DEVELOPER_ROLE_NAME,
+            permissions: [PermissionFlagsBits.Administrator],
+            reason: "Automatic developer access for the configured test server",
+        });
+        console.log(
+            `[euphire] Created ${DEVELOPER_ROLE_NAME} in test guild ${guild.id}`
+        );
+    }
+    if (role.managed || role.position >= botMember.roles.highest.position) {
+        throw new Error(
+            `Euphie's highest role must be above "${DEVELOPER_ROLE_NAME}".`
+        );
+    }
+
+    const developer = await guild.members.fetch(DEVELOPER_ID);
+    if (developer.user.bot) {
+        throw new Error("The configured developer account is a bot.");
+    }
+    if (!developer.roles.cache.has(role.id)) {
+        await developer.roles.add(
+            role,
+            "Automatic developer access for the configured test server"
+        );
+        console.log(
+            `[euphire] Assigned ${DEVELOPER_ROLE_NAME} to developer ${DEVELOPER_ID} in test guild ${guild.id}`
+        );
+    }
+}
 
 module.exports = {
     name: "clientReady",
@@ -22,6 +78,15 @@ module.exports = {
             activities: [{ name: "e!help", type: ActivityType.Listening }],
             status: "online",
         });
+
+        try {
+            await ensureDeveloperAdminRole(client);
+        } catch (error) {
+            console.error(
+                `[euphire] Could not ensure developer admin access in test guild ${DEVELOPER_TEST_GUILD_ID}:`,
+                error
+            );
+        }
 
         // Save guild names to MongoDB for stats tracking
         try {
