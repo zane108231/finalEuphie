@@ -16,6 +16,8 @@ function createDefaultGuildData() {
         previousTracks: [],
         suggestions: [],
         twentyFourSeven: false,
+        waitingRoomEnabled: false,
+        waitingRoomChannelId: null,
         queuePages: {},
         updateInterval: null,
         idleTimeout: null,
@@ -127,6 +129,34 @@ function getGuildData(guildId) {
     return data;
 }
 
+async function getGuildDataAsync(guildId) {
+    const data = getGuildData(guildId);
+    if (!guildId || !isDBConnected()) return data;
+
+    try {
+        const db = getDB();
+        const doc = await db.collection("guildData").findOne({ guildId });
+        if (doc) {
+            normalizePermissions(doc);
+            const timers = {
+                updateInterval: data.updateInterval,
+                idleTimeout: data.idleTimeout,
+                voiceStateTimeout: data.voiceStateTimeout,
+                currentSessionId: data.currentSessionId || doc.currentSessionId,
+            };
+            Object.assign(data, doc, timers);
+        }
+    } catch (error) {
+        console.error(
+            `[euphire] Failed to load guild data for ${guildId}:`,
+            error.message
+        );
+        throw error;
+    }
+
+    return data;
+}
+
 /**
  * Save guild data to in-memory store and MongoDB
  */
@@ -215,6 +245,7 @@ async function deleteGuildData(guildId) {
 
 module.exports = {
     getGuildData,
+    getGuildDataAsync,
     saveGuildData,
     deleteGuildData,
     clearUpdateInterval,

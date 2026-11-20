@@ -2,15 +2,12 @@ const {
     SlashCommandBuilder,
     MessageFlags,
     EmbedBuilder,
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle,
 } = require("discord.js");
 const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const { startIfIdle, ensurePlayer, setAnnounceChannel, buildNoBotsAvailablePayload } = require("../utils/playback");
 const coordinator = require("../utils/mongoCoordinator");
-const { getPrefix } = require("../utils/prefixStore");
 const { replyNotInVoiceChannel } = require("../utils/permissions");
+const { createCouldNotPlayEmbed } = require("../utils/components");
 const {
     getSpotifyTrackDisplayName,
     setTrackDisplayMetadata,
@@ -150,10 +147,8 @@ function getLoadFailureMessage(exception) {
         .slice(0, 500);
 }
 
-function buildPlayErrorEmbed() {
-    return new EmbedBuilder()
-        .setColor(0xed4245)
-        .setDescription("Could not find song");
+function buildPlayErrorEmbed(track = null) {
+    return createCouldNotPlayEmbed(track);
 }
 
 function buildAddedPlaylistEmbed(
@@ -290,27 +285,8 @@ module.exports = {
         const query =
             interaction.queryOverride || interaction.options.getString("query");
         if (!query) {
-            const prefix = getPrefix(interaction.guild?.id, interaction.user?.id);
-            const helpEmbed = new EmbedBuilder()
-                .setColor(0x2b2d31)
-                .setAuthor({
-                    name: "Help",
-                    iconURL: client.user.displayAvatarURL(),
-                })
-                .setDescription(
-                    `**Usage:** ${prefix}play <search term | url>\n` +
-                        "**Description:** Queue a track or playlist from a search term or url"
-                );
-            const helpButton = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId("help_open")
-                    .setLabel("Help")
-                    .setStyle(ButtonStyle.Success)
-            );
-
             return interaction.reply({
-                embeds: [helpEmbed],
-                components: [helpButton],
+                content: "Usage: `e!play <search term | url>`",
                 flags: MessageFlags.Ephemeral,
             });
         }
@@ -395,6 +371,7 @@ module.exports = {
         const guildData = getGuildData(interaction.guild.id);
 
         let player;
+        let failureTrack = null;
         try {
             player = await ensurePlayer(client, {
                 guildId: interaction.guild.id,
@@ -417,7 +394,7 @@ module.exports = {
             await saveGuildData(interaction.guild.id, guildData);
         } catch (err) {
             console.error("[euphire] Failed to create player:", err);
-            coordinator.releaseBot(voiceChannelId);
+            await coordinator.releaseBot(voiceChannelId, client.botId);
             return interaction.editReply({
                 content:
                     err.code === "VOICE_CHANNEL_PERMISSION_MISSING"
@@ -633,6 +610,7 @@ module.exports = {
                 loadType === "TRACK_LOADED"
             ) {
                 let track = tracks[0];
+                failureTrack = track || null;
                 if (!track) {
                     return interaction.editReply({
                         embeds: [buildPlayErrorEmbed()],
@@ -646,9 +624,10 @@ module.exports = {
                 );
                 if (!track) {
                     return interaction.editReply({
-                        embeds: [buildPlayErrorEmbed()],
+                        embeds: [buildPlayErrorEmbed(failureTrack)],
                     });
                 }
+                failureTrack = track;
 
                 setTrackDisplayMetadata(
                     track,
@@ -713,7 +692,7 @@ module.exports = {
         } catch (error) {
             console.error("[euphire] Play error:", error.message);
             return interaction.editReply({
-                embeds: [buildPlayErrorEmbed()],
+                embeds: [buildPlayErrorEmbed(failureTrack)],
             });
         }
     },

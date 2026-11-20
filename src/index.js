@@ -382,9 +382,11 @@ if (missingTokens.length > 0) {
                                 err.message
                             );
                         })
-                        .finally(() =>
-                            playbackRecovery.startCheckpointing(client)
-                        );
+                        .finally(async () => {
+                            playbackRecovery.startCheckpointing(client);
+                            await require("./utils/waitingRoom")
+                                .restoreClientWaitingRooms(client);
+                        });
                 });
 
                 client.on("shardDisconnect", () => {

@@ -22,9 +22,11 @@ module.exports = {
 
         const embed = new EmbedBuilder()
             .setColor(0xf4a7c7)
-            .setTitle("Ubos na Jockie? Ako na!")
-            .setDescription("Gamitin mo na ako `e!join`")
-            .setFooter({ text: "Ako napapalit muna diyan" });
+            .setTitle("No more JockieBots?")
+            .setDescription(
+                "You can use **Euphie Music** as an alternative!\n\n" +
+                    "Simply type `e!join` to start listening to your favorite music."
+            );
 
         return interaction.reply({ embeds: [embed] });
     },

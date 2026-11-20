@@ -1,6 +1,17 @@
 const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require("discord.js");
 const { resumeGuildSession } = require("../utils/playbackRecovery");
 
+function replyNoSavedSession(interaction) {
+    return interaction.reply({
+        embeds: [
+            new EmbedBuilder()
+                .setColor(0xed4245)
+                .setDescription("You have no saved session"),
+        ],
+        flags: MessageFlags.Ephemeral,
+    });
+}
+
 module.exports = {
     aliases: ["resumesession"],
     data: new SlashCommandBuilder()
@@ -24,10 +35,7 @@ module.exports = {
                     null
             );
             if (!player) {
-                return interaction.reply({
-                    content: "There is no saved music session for this server.",
-                    flags: MessageFlags.Ephemeral,
-                });
+                return replyNoSavedSession(interaction);
             }
 
             const embed = new EmbedBuilder()
@@ -40,6 +48,12 @@ module.exports = {
                 flags: MessageFlags.Ephemeral,
             });
         } catch (err) {
+            if (
+                err.message ===
+                "There is no saved music session for your current voice channel."
+            ) {
+                return replyNoSavedSession(interaction);
+            }
             return interaction.reply({
                 content: err.message,
                 flags: MessageFlags.Ephemeral,

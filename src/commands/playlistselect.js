@@ -9,6 +9,7 @@ const { createPlaylistSelection } = require("../utils/playlistSelection");
 const { replyNotInVoiceChannel } = require("../utils/permissions");
 
 module.exports = {
+    aliases: ["playselect"],
     data: new SlashCommandBuilder()
         .setName("playlistselect")
         .setDescription("Select and queue one track from a playlist URL")
@@ -25,7 +26,7 @@ module.exports = {
             interaction.args?.join(" ").trim();
         if (!query) {
             return interaction.reply({
-                content: "Usage: `e!playlistselect <playlist URL>`",
+                content: "Usage: `e!playselect <playlist URL>`",
                 flags: MessageFlags.Ephemeral,
             });
         }

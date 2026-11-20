@@ -19,14 +19,12 @@ async function executeSkipTrack(interaction, player, isVoteSkip = false) {
 
     // End statistics session (skipped manually)
     try {
-        const sessionId = player.currentSessionId || guildData.currentSessionId;
+        const sessionId = player.currentSessionId;
         if (sessionId) {
             console.log("[euphire] skip: ending session (manual skip)");
             const listenedMs = player.position || (player.sessionStartedAt ? Date.now() - player.sessionStartedAt : 0);
             await endSession(sessionId, false, listenedMs);
             player.currentSessionId = null;
-            guildData.currentSessionId = null;
-            await saveGuildData(interaction.guild.id, guildData);
         }
     } catch (err) {
         console.error("[euphire] Failed to end stats session on skip:", err.message);

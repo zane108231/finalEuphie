@@ -7,6 +7,7 @@ const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const { getTopTracks, endSession } = require("../utils/mongoStats");
 const { getDB } = require("../utils/database");
 const coordinator = require("../utils/mongoCoordinator");
+const { startIfIdle } = require("../utils/playback");
 
 const COMMANDS = [
     ["pause", "Pause the current track", "pause"],
@@ -293,7 +294,74 @@ async function executeQueueAction(action, interaction, client, player, value) {
         await persistQueue(client, player);
         return reply(interaction, `Selected **${getTrackTitle(selected)}** at random.`);
     }
-    if (action === "sort" || action === "reorder") {
+    if (action === "sort") {
+        const reverse = args.some((arg) =>
+            ["--reverse", "reverse", "desc"].includes(arg.toLowerCase())
+        );
+        const sortArgs = args.filter(
+            (arg) =>
+                !["--reverse", "reverse", "desc"].includes(arg.toLowerCase())
+        );
+        const mode = (sortArgs[0] || "").toLowerCase();
+        const startOverArg = sortArgs[1]?.toLowerCase();
+        if (
+            !["title", "alphabetical", "length", "duration", "requester", "random"].includes(mode) ||
+            sortArgs.length > 2 ||
+            (startOverArg && !["true", "false"].includes(startOverArg))
+        ) {
+            return reply(interaction, "Usage: `sort <sort type> <start over>`.");
+        }
+        if (!tracks.length) return reply(interaction, "The queue is empty.");
+
+        const startOver = startOverArg !== "false";
+        const currentTrack = player.current;
+        const sorted = startOver && currentTrack
+            ? [currentTrack, ...tracks]
+            : [...tracks];
+
+        if (mode === "random") {
+            for (let index = sorted.length - 1; index > 0; index--) {
+                const randomIndex = Math.floor(Math.random() * (index + 1));
+                [sorted[index], sorted[randomIndex]] = [
+                    sorted[randomIndex],
+                    sorted[index],
+                ];
+            }
+        } else {
+            const compare =
+                mode === "length" || mode === "duration"
+                    ? (a, b) => (a.info?.length || 0) - (b.info?.length || 0)
+                    : mode === "requester"
+                      ? (a, b) =>
+                            getRequesterLabel(a).localeCompare(
+                                getRequesterLabel(b)
+                            )
+                      : (a, b) =>
+                            getTrackTitle(a).localeCompare(getTrackTitle(b));
+            sorted.sort(compare);
+            if (mode === "length" || mode === "duration") {
+                if (!reverse) sorted.reverse();
+            } else if (reverse) {
+                sorted.reverse();
+            }
+        }
+
+        queue.splice(0, queue.length, ...sorted);
+        if (startOver && currentTrack) {
+            player.stop();
+        } else if (!currentTrack) {
+            await startIfIdle(player);
+        }
+        await persistQueue(client, player);
+        return reply(
+            interaction,
+            `Queue sorted by **${mode}**${reverse ? " in reverse order" : ""}.` +
+                (startOver
+                    ? " Playback is starting over from the top."
+                    : " The current track will continue playing.")
+        );
+    }
+    if (action === "reorder") {
         if (!tracks.length) return reply(interaction, "The queue is empty.");
         const mode = (args[0] || "title").toLowerCase();
         const reverse = args.includes("reverse") || args.includes("desc");
@@ -356,7 +424,7 @@ async function executeQueueAction(action, interaction, client, player, value) {
     if (action === "remove-current") {
         if (!player.current) return reply(interaction, "There is no current track to remove.");
         const title = getTrackTitle(player.current);
-        const sessionId = player.currentSessionId || guildData.currentSessionId;
+        const sessionId = player.currentSessionId;
         if (sessionId) {
             try {
                 await endSession(sessionId, false, Number(player.position) || 0);
@@ -364,8 +432,6 @@ async function executeQueueAction(action, interaction, client, player, value) {
                 console.error("[euphire] Failed to end stats session when removing current track:", error.message);
             }
             player.currentSessionId = null;
-            guildData.currentSessionId = null;
-            await saveGuildData(interaction.guild.id, guildData);
         }
         player.stop();
         await persistQueue(client, player);

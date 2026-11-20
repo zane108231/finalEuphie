@@ -1,5 +1,4 @@
 const { createPlaybackFeature } = require("../utils/playbackFeature");
-const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const coordinator = require("../utils/mongoCoordinator");
 
 module.exports = createPlaybackFeature({
@@ -19,8 +18,6 @@ module.exports = createPlaybackFeature({
             return;
         }
 
-        const guildData = getGuildData(guildId);
-        guildData.leaveAfterQueueEnd = true;
-        await saveGuildData(guildId, guildData);
+        player.leaveAfterQueueEnd = true;
     },
 });

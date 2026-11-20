@@ -526,6 +526,17 @@ function getSpotifyTrackDisplayName(track) {
         : displayTitle;
 }
 
+function getSpotifyTrackFailureName(track) {
+    const info = track?.info || {};
+    if (
+        !info.spotifyTitle &&
+        String(info.sourceName || "").toLowerCase() !== "spotify"
+    ) {
+        return null;
+    }
+    return getSpotifyTrackDisplayName(track);
+}
+
 function getTrackDisplayParts(track) {
     const sourceName = String(track?.info?.sourceName || "").toLowerCase();
     if (sourceName === "youtube" || sourceName === "youtube music") {
@@ -553,7 +564,13 @@ function getTrackDisplayParts(track) {
 function getSpotifyTrackUrl(track) {
     const info = track?.info || {};
     const sourceName = String(info.sourceName || "").toLowerCase();
-    const rawUri = String(info.spotifyUrl || (sourceName === "spotify" ? info.uri || "" : ""));
+    const rawUri = String(
+        info.spotifyUrl ||
+            (sourceName === "spotify"
+                ? info.uri ||
+                  (info.identifier ? `spotify:track:${info.identifier}` : "")
+                : "")
+    );
 
     if (/^https?:\/\//i.test(rawUri)) {
         try {
@@ -795,6 +812,7 @@ module.exports = {
     getTrackDisplayName,
     getProfileTrackDisplayName,
     getSpotifyTrackDisplayName,
+    getSpotifyTrackFailureName,
     getTrackDisplayParts,
     getSpotifyTrackUrl,
     findSpotifyTrackUrl,

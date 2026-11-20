@@ -11,6 +11,7 @@ const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const coordinator = require("../utils/mongoCoordinator");
 const { searchYoutubeTrack, resolveSpotifyTrackAudio } = require("../utils/search");
 const { getSpotifyPlaylistMetadata } = require("../utils/spotifyPlaylistSearch");
+const { createCouldNotPlayEmbed } = require("../utils/components");
 const {
     getSpotifyTrackDisplayName,
     setTrackDisplayMetadata,
@@ -41,10 +42,8 @@ async function sendPublicEmbed(interaction, embed) {
     }
 }
 
-function buildSearchErrorEmbed() {
-    return new EmbedBuilder()
-        .setColor(0xed4245)
-        .setDescription("Could not find song");
+function buildSearchErrorEmbed(track = null) {
+    return createCouldNotPlayEmbed(track);
 }
 
 module.exports = {
@@ -122,11 +121,22 @@ module.exports = {
             if (!existingPlayer && player) {
                 markIntentionalDisconnect(player);
                 player.destroy();
+            } else if (existingPlayer) {
+                try {
+                    await require("../utils/waitingRoom")
+                        .returnPlayerToWaitingRoom(targetClient, existingPlayer);
+                } catch (error) {
+                    console.error(
+                        `[euphire] Failed to return ${targetClient.botId} to the waiting room after insert failure:`,
+                        error
+                    );
+                }
             }
-            await coordinator.releaseBot(voiceChannelId);
+            await coordinator.releaseBot(voiceChannelId, targetClient.botId);
         };
 
         let playerReady = false;
+        let failureTrack = null;
         try {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             player = await ensurePlayer(targetClient, {
@@ -331,6 +341,7 @@ module.exports = {
                 loadType === "TRACK_LOADED"
             ) {
                 let track = tracks[0];
+                failureTrack = track || null;
                 if (!track) {
                     await releaseNewReservation();
                     return interaction.editReply({
@@ -346,9 +357,10 @@ module.exports = {
                 if (!track) {
                     await releaseNewReservation();
                     return interaction.editReply({
-                        embeds: [buildSearchErrorEmbed()],
+                        embeds: [buildSearchErrorEmbed(failureTrack)],
                     });
                 }
+                failureTrack = track;
 
                 setTrackDisplayMetadata(track, query);
                 const spotifyMetadata = await findSpotifyTrackMetadata(
@@ -410,7 +422,7 @@ module.exports = {
             } else {
                 await releaseNewReservation();
                 return interaction.editReply({
-                    embeds: [buildSearchErrorEmbed()],
+                    embeds: [buildSearchErrorEmbed(failureTrack)],
                 });
             }
         } catch (error) {

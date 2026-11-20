@@ -1,9 +1,6 @@
 const { handleChatPlayMessage } = require("../handlers/chatPlayHandler");
 const { handlePrefixCommand } = require("../handlers/commandHandler");
-const {
-    JOCKIE_BOT_IDS,
-    rememberJockieCommand,
-} = require("../utils/jockieJoinContext");
+const { JOCKIE_BOT_IDS } = require("../utils/jockieBotIds");
 const { EmbedBuilder } = require("discord.js");
 const coordinator = require("../utils/mongoCoordinator");
 
@@ -36,9 +33,11 @@ async function respondToJockieNoBotsMessage(client, message) {
 
     const embed = new EmbedBuilder()
         .setColor(0xf4a7c7)
-        .setTitle("Ubos na Jockie? Ako na!")
-        .setDescription("Gamitin mo na ako `e!join`")
-        .setFooter({ text: "Ako napapalit diyan" });
+        .setTitle("No more JockieBots?")
+        .setDescription(
+            "You can use **Euphie Music** as an alternative!\n\n" +
+                "Simply type `e!join` to start listening to your favorite music."
+        );
 
     try {
         await message.channel.send({ embeds: [embed] });
@@ -91,14 +90,6 @@ module.exports = {
         }
 
         if (await respondToEuphieMention(client, message)) return;
-
-        if (/^\s*m!\S*/i.test(message.content || "")) {
-            rememberJockieCommand({
-                guildId: message.guild.id,
-                voiceChannelId: message.member?.voice?.channelId,
-                textChannelId: message.channel.id,
-            });
-        }
 
         // console.log(`[euphire] Message received: bot=${client.botId}, content="${message.content}", author=${message.author.id}`);
 

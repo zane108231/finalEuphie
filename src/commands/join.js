@@ -50,6 +50,17 @@ module.exports = {
             }
         }
 
+        const existingOwner = coordinator.resolveSessionOwner(
+            voiceChannelId,
+            interaction.guild
+        );
+        if (existingOwner) {
+            return interaction.reply({
+                embeds: [createAlreadyHereEmbed()],
+                flags: MessageFlags.Ephemeral,
+            });
+        }
+
         // Determine which bot to use:
         let assignedClient = client;
         if (!coordinator.isBotAvailable(client.botId, guildId)) {
@@ -66,19 +77,24 @@ module.exports = {
             }
         }
 
-        // Clean up any stale session if previously bound to a different bot
-        const staleOwner = coordinator.sessionOwners.get(voiceChannelId);
-        if (staleOwner && staleOwner !== assignedClient.botId) {
-            await coordinator.releaseBot(voiceChannelId);
-        }
-
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         const guildData = getGuildData(guildId);
 
         try {
             // Reserve and mark THIS specific bot active in coordinator for this voice channel
-            await coordinator.reserveSpecificBot(voiceChannelId, interaction.user.id, assignedClient.botId, guildId, true);
+            const reserved = await coordinator.reserveSpecificBot(
+                voiceChannelId,
+                interaction.user.id,
+                assignedClient.botId,
+                guildId,
+                true
+            );
+            if (!reserved) {
+                return interaction.editReply({
+                    content: "A Euphie bot is already assigned to your voice channel.",
+                });
+            }
             await coordinator.markBotActive(assignedClient.botId, voiceChannelId);
             coordinator.setSessionChannel(voiceChannelId, interaction.channel.id);
             coordinator.setSessionDJ(voiceChannelId, interaction.user.id);
@@ -109,7 +125,7 @@ module.exports = {
             });
         } catch (error) {
             console.error("[euphire] Join error:", error);
-            await coordinator.releaseBot(voiceChannelId);
+            await coordinator.releaseBot(voiceChannelId, assignedClient.botId);
             return interaction.editReply({
                 content:
                     error.code === "VOICE_CHANNEL_PERMISSION_MISSING"

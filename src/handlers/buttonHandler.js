@@ -28,6 +28,27 @@ async function handleButtonInteraction(client, interaction) {
         return;
     }
 
+    if (interaction.customId?.startsWith("prefix_usage_help:")) {
+        const commandName = decodeURIComponent(
+            interaction.customId.slice("prefix_usage_help:".length)
+        );
+        const { embed, components } = require("../commands/help")
+            .buildCommandDetailEmbed(commandName, "e!");
+        await interaction.update({
+            embeds: [embed],
+            components,
+        });
+        return;
+    }
+
+    if (interaction.customId?.startsWith("playrecent:")) {
+        await require("../commands/playrecent").handleInteraction(
+            interaction,
+            client
+        );
+        return;
+    }
+
     // Handle help menu interactions
     if (interaction.customId?.startsWith('help_')) {
         const helpCommand = require('../commands/help');
@@ -410,7 +431,6 @@ async function handleButtonInteraction(client, interaction) {
                         player.currentSessionId = sessionId;
                         player.sessionStartedAt = Date.now();
                         player.sessionUserId = userId;
-                        guildData.currentSessionId = sessionId;
                         
                         // Add current voice channel members as participants
                         const voiceChannel = client.channels.cache.get(player.voiceChannel);
@@ -445,13 +465,12 @@ async function handleButtonInteraction(client, interaction) {
             } else {
                 // Pausing - commit time listened so far
                 try {
-                    const sessionId = player.currentSessionId || guildData.currentSessionId;
+                    const sessionId = player.currentSessionId;
                     if (sessionId) {
                         console.log("[euphire] pause button: ending session (manual pause)");
                         const listenedMs = player.position || (player.sessionStartedAt ? Date.now() - player.sessionStartedAt : 0);
                         await endSession(sessionId, false, listenedMs);
                         player.currentSessionId = null;
-                        guildData.currentSessionId = null;
                     }
                 } catch (err) {
                     console.error("[euphire] Failed to end stats session on pause:", err.message);
@@ -472,13 +491,12 @@ async function handleButtonInteraction(client, interaction) {
             
             // End statistics session (skipped manually)
             try {
-                const sessionId = player.currentSessionId || guildData.currentSessionId;
+                const sessionId = player.currentSessionId;
                 if (sessionId) {
                     console.log("[euphire] skip button: ending session (manual skip)");
                     const listenedMs = player.position || (player.sessionStartedAt ? Date.now() - player.sessionStartedAt : 0);
                     await endSession(sessionId, false, listenedMs);
                     player.currentSessionId = null;
-                    guildData.currentSessionId = null;
                 }
             } catch (err) {
                 console.error("[euphire] Failed to end stats session on skip:", err.message);
@@ -519,57 +537,39 @@ async function handleButtonInteraction(client, interaction) {
             }
             guildData.stopConfirmPending = null;
 
-            // Release bot reservation (DJ releases ownership)
-            if (player.voiceChannel) {
-                const botId = coordinator.resolveSessionOwner(player.voiceChannel, interaction.guild) || coordinator.getSessionOwner(player.voiceChannel);
-                await coordinator.releaseBot(player.voiceChannel);
-                if (botId) {
-                    coordinator.markBotAvailable(botId);
+            if (player.currentSessionId) {
+                try {
+                    const listenedMs = player.position ||
+                        (player.sessionStartedAt ? Date.now() - player.sessionStartedAt : 0);
+                    await endSession(player.currentSessionId, false, listenedMs);
+                    player.currentSessionId = null;
+                } catch (error) {
+                    console.error(
+                        "[euphire] Failed to end stats session on stop button:",
+                        error.message
+                    );
                 }
             }
-
-            // Clear DJ ownership from guildData
-            guildData.djOwnerId = null;
-
-            clearUpdateInterval(guildData);
             if (player.idleTimeout) {
                 clearTimeout(player.idleTimeout);
                 player.idleTimeout = null;
             }
-            if (guildData.idleTimeout) {
-                clearTimeout(guildData.idleTimeout);
-                guildData.idleTimeout = null;
+            let returnedToWaitingRoom = false;
+            try {
+                returnedToWaitingRoom = await require("../utils/waitingRoom")
+                    .returnPlayerToWaitingRoom(client, player);
+            } catch (error) {
+                console.error(
+                    `[euphire] Failed to return ${client.botId} to the waiting room after stop button:`,
+                    error
+                );
             }
-            guildData.suggestions = [];
-            guildData.previousTracks = [];
-
-            // If ChatPlay, edit message back to idle state
-            if (guildData.chatPlayChannelId && guildData.chatPlayMessageId) {
-                try {
-                    const container = createChatPlayIdleContainer();
-                    const channel = client.channels.cache.get(guildData.chatPlayChannelId);
-                    if (channel) {
-                        const msg = await channel.messages.fetch(guildData.chatPlayMessageId);
-                        await msg.edit({
-                            components: [container],
-                            attachments: [],
-                            flags: MessageFlags.IsComponentsV2,
-                        });
-                    }
-                } catch (err) {
-                    console.error("[euphire] Failed to edit ChatPlay message on stop:", err.message);
-                }
-            } else if (guildData.playerMessageId && guildData.playerChannelId) {
-                guildData.playerMessageId = null;
-                guildData.playerChannelId = null;
+            if (!returnedToWaitingRoom) {
+                player.queue.clear();
+                player.stop();
+                markIntentionalDisconnect(player);
+                player.destroy();
             }
-
-            player.queue.clear();
-            player.stop();
-
-            // Always destroy player to release voice connection
-            markIntentionalDisconnect(player);
-            player.destroy();
             return;
         }
 

@@ -1,11 +1,10 @@
 const { SlashCommandBuilder, MessageFlags } = require("discord.js");
-const { getGuildData, saveGuildData, clearUpdateInterval } = require("../utils/mongoGuildData");
 const { requireMusicAction } = require("../utils/permissions");
 const { markIntentionalDisconnect } = require("../utils/playback");
 const { endSession } = require("../utils/mongoStats");
-const coordinator = require("../utils/mongoCoordinator");
 const { removeSavedSession } = require("../utils/playbackRecovery");
 const { createStopConfirmationEmbed } = require("../utils/stopConfirmation");
+const { returnPlayerToWaitingRoom } = require("../utils/waitingRoom");
 
 module.exports = {
     aliases: ["leave"],
@@ -17,60 +16,42 @@ module.exports = {
         const player = await requireMusicAction(interaction, client, "stop");
         if (!player) return;
 
-        // Clean up guild state
-        const guildData = getGuildData(interaction.guild.id);
-        guildData.leaveAfterQueueEnd = false;
-        
-        // Release bot reservation (DJ releases ownership)
-        if (player.voiceChannel) {
-            const botId = coordinator.resolveSessionOwner(player.voiceChannel, interaction.guild) || coordinator.getSessionOwner(player.voiceChannel);
-            await coordinator.releaseBot(player.voiceChannel);
-            if (botId) {
-                coordinator.markBotAvailable(botId);
-            }
-        }
-        if (client?.botId) {
-            coordinator.markBotAvailable(client.botId);
-        }
-        
-        // Clear DJ ownership from guildData
-        guildData.djOwnerId = null;
-        
+        player.leaveAfterQueueEnd = false;
+
         // End statistics session (stopped manually)
         try {
-            const sessionId = player.currentSessionId || guildData.currentSessionId;
+            const sessionId = player.currentSessionId;
             if (sessionId) {
                 console.log("[euphire] stop: ending session (manual stop)");
                 const listenedMs = player.position || (player.sessionStartedAt ? Date.now() - player.sessionStartedAt : 0);
                 await endSession(sessionId, false, listenedMs);
                 player.currentSessionId = null;
-                guildData.currentSessionId = null;
             }
         } catch (err) {
             console.error("[euphire] Failed to end stats session on stop:", err.message);
         }
         
-        clearUpdateInterval(guildData);
         if (player.idleTimeout) {
             clearTimeout(player.idleTimeout);
             player.idleTimeout = null;
         }
-        if (guildData.idleTimeout) {
-            clearTimeout(guildData.idleTimeout);
-            guildData.idleTimeout = null;
-        }
-        guildData.suggestions = [];
-        guildData.previousTracks = [];
 
         await removeSavedSession(interaction.guild.id, client.botId);
-        player.queue?.clear?.();
-        player.stop?.();
-
-        guildData.playerMessageId = null;
-        guildData.playerChannelId = null;
-        await saveGuildData(interaction.guild.id, guildData);
-        markIntentionalDisconnect(player);
-        player.destroy?.();
+        let returnedToWaitingRoom = false;
+        try {
+            returnedToWaitingRoom = await returnPlayerToWaitingRoom(client, player);
+        } catch (error) {
+            console.error(
+                `[euphire] Failed to return ${client.botId} to the waiting room after stop command:`,
+                error
+            );
+        }
+        if (!returnedToWaitingRoom) {
+            player.queue?.clear?.();
+            player.stop?.();
+            markIntentionalDisconnect(player);
+            player.destroy?.();
+        }
 
         const embed = createStopConfirmationEmbed();
         if (interaction.replied || interaction.deferred) {

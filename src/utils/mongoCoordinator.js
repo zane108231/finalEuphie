@@ -180,12 +180,33 @@ class MongoCoordinator {
      * Reserve a specific bot for a voice channel
      */
     async reserveSpecificBot(voiceChannelId, userId, botId, guildId, force = false) {
+        const existingOwner = this.sessionOwners.get(voiceChannelId);
+        if (existingOwner && existingOwner !== botId) {
+            console.log(
+                `[euphire] Cannot reserve VC ${voiceChannelId} for bot ${botId}; it is owned by ${existingOwner}`
+            );
+            return false;
+        }
+
         // Prevent reserving any bot that is already occupied in a DIFFERENT voice channel in THIS guild
         if (guildId) {
             const currentVcInGuild = this.getBotVoiceChannelInGuild(botId, guildId);
             if (currentVcInGuild && currentVcInGuild !== voiceChannelId) {
-                console.log(`[euphire] Cannot reserve bot ${botId} for VC ${voiceChannelId} - already occupied in guild ${guildId} VC ${currentVcInGuild}`);
-                return false;
+                const currentPlayer =
+                    this.getRiffy(botId)?.players?.get(guildId);
+                const currentSessionOwner =
+                    this.sessionOwners.get(currentVcInGuild);
+                const isWaitingRoom =
+                    require("./waitingRoom").isWaitingRoomChannel(
+                        guildId,
+                        currentVcInGuild
+                    ) &&
+                    currentSessionOwner !== botId &&
+                    (currentPlayer?._waitingRoom || !currentPlayer);
+                if (!isWaitingRoom) {
+                    console.log(`[euphire] Cannot reserve bot ${botId} for VC ${voiceChannelId} - already occupied in guild ${guildId} VC ${currentVcInGuild}`);
+                    return false;
+                }
             }
         }
 
@@ -212,9 +233,9 @@ class MongoCoordinator {
     /**
      * Release a bot from a voice channel
      */
-    async releaseBot(voiceChannelId) {
+    async releaseBot(voiceChannelId, expectedBotId = null) {
         const botId = this.sessionOwners.get(voiceChannelId);
-        if (!botId) return;
+        if (!botId || (expectedBotId && botId !== expectedBotId)) return;
 
         console.log(`[euphire] Releasing bot ${botId} from voice channel ${voiceChannelId}`);
 
@@ -276,19 +297,23 @@ class MongoCoordinator {
         for (const client of this.getAllClients()) {
             if (!client.user) continue;
 
+            const vc = client.channels?.cache?.get(voiceChannelId);
+            const targetGuild =
+                (guild && client.guilds?.cache?.get(guild.id)) ||
+                vc?.guild ||
+                client.guilds?.cache?.find((g) =>
+                    g.channels.cache.has(voiceChannelId)
+                );
             let isConnected = false;
+            let connectedPlayer = null;
 
             // 1. Check voice channel members if cached
-            const vc = client.channels?.cache?.get(voiceChannelId);
             if (vc?.members?.has(client.user.id)) {
                 isConnected = true;
             }
 
             // 2. Check guild member me voice state
             if (!isConnected) {
-                const targetGuild = (guild && client.guilds?.cache?.get(guild.id)) ||
-                    (vc?.guild) ||
-                    client.guilds?.cache?.find(g => g.channels.cache.has(voiceChannelId));
                 const myMember = targetGuild?.members?.cache?.get(client.user.id) || targetGuild?.members?.me;
                 if (myMember?.voice?.channelId === voiceChannelId) {
                     isConnected = true;
@@ -296,13 +321,27 @@ class MongoCoordinator {
             }
 
             // 3. Check riffy player
-            if (!isConnected && client.riffy?.players) {
+            if (client.riffy?.players) {
                 for (const [, p] of client.riffy.players) {
                     if (p && p.voiceChannel === voiceChannelId) {
-                        isConnected = true;
+                        connectedPlayer = p;
+                        if (!p._waitingRoom) isConnected = true;
+                        else isConnected = false;
                         break;
                     }
                 }
+            }
+
+            if (
+                isConnected &&
+                require("./waitingRoom").isWaitingRoomChannel(
+                    targetGuild?.id || guild?.id,
+                    voiceChannelId
+                ) &&
+                !this.sessionOwners.has(voiceChannelId) &&
+                (!connectedPlayer || connectedPlayer._waitingRoom)
+            ) {
+                continue;
             }
 
             if (isConnected) {
@@ -428,7 +467,21 @@ class MongoCoordinator {
 
             const vcInGuild = this.getBotVoiceChannelInGuild(botId, guildId);
             if (vcInGuild) {
-                return false; // Already in a voice channel in THIS guild
+                const player = client.riffy?.players?.get(guildId);
+                const sessionOwner = this.sessionOwners.get(vcInGuild);
+                const inWaitingRoom =
+                    require("./waitingRoom").isWaitingRoomChannel(
+                        guildId,
+                        vcInGuild
+                    ) &&
+                    sessionOwner !== botId &&
+                    (player?._waitingRoom ||
+                        (!player?.playing &&
+                            !player?.paused &&
+                            !player?.queue?.length));
+                if (!inWaitingRoom) {
+                    return false; // Already in an active voice channel in THIS guild
+                }
             }
             return true;
         }

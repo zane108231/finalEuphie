@@ -49,8 +49,8 @@ const HELP_PAGES = [
                     { name: "search", desc: "Search Spotify tracks and choose one to play", usage: "search <track or artist>" },
                     { name: "insert", desc: "Insert a track right after the one that is currently playing", usage: "insert <track>", aliases: ["ins"] },
                     { name: "playleave", desc: "Play a track and leave when the queue finishes", usage: "playleave <track or URL>" },
-                    { name: "playrecent", desc: "Queue your recently played tracks", usage: "playrecent" },
-                    { name: "playlistselect", desc: "Select and queue a single track from a playlist by URL", usage: "playlistselect <playlist URL>" },
+                    { name: "playrecent", desc: "Browse and play one of your recently played tracks", usage: "playrecent" },
+                    { name: "playlistselect", desc: "Select and queue a single track from a playlist by URL", usage: "playselect <playlist URL>", aliases: ["playselect"] },
                     { name: "playingsingle", desc: "Queue a single track from a playlist by URL", usage: "playingsingle <playlist URL> [track number]" },
                     { name: "albumsearch", desc: "Search and queue a Spotify album", usage: "albumsearch <album or artist>" },
                     { name: "resumesession", desc: "Resume your saved music session after the bot asks you", usage: "resumesession" },
@@ -104,7 +104,7 @@ const HELP_PAGES = [
                     { name: "remove after played", desc: "Remove tracks after they have been played", usage: "remove after played" },
                 ] },
             { name: "Other", commands: [
-                    { name: "sort", desc: "Sort the queue", usage: "sort <title | length | requester> [reverse]" },
+                    { name: "sort", desc: "Sort the queue", usage: "sort <sort type> <start over>" },
                     { name: "move", desc: "Move a track in the queue", usage: "move <from> <to>" },
                     { name: "swap", desc: "Swap the position of two tracks", usage: "swap <position> <position>" },
                     { name: "reverse", desc: "Reverse the current queue", usage: "reverse" },
@@ -367,13 +367,17 @@ function buildCommandDetailEmbed(commandName, prefix = "e!") {
         foundCategory = "General";
     }
 
+    const description =
+        foundCmd.name === "sort"
+            ? "Sort the queue, the queue will start over by the default, if you want it to continue from the current song you can specify it in the argument"
+            : foundCmd.desc;
     const embed = new EmbedBuilder()
         .setColor(0x2b2d31)
         .setTitle(`Help for command: ${foundCmd.name}`)
-        .setDescription(foundCmd.desc);
+        .setDescription(description);
 
     // Option definitions section
-    if (foundCmd.name === "permission") {
+    if (foundCmd.name === "sort") {
         let optionDefs = "";
         optionDefs += "`reverse` - Reverse the sort type, this would change length from shortest to longest track\n";
         optionDefs += "`length` - Sort by track length\n";
@@ -395,6 +399,13 @@ function buildCommandDetailEmbed(commandName, prefix = "e!") {
         permissions += "`audio filter` - Required to use audio filters\n";
         embed.addFields({ name: "Session permissions", value: permissions || "No special permissions required", inline: false });
     }
+    if (foundCmd.name === "sort") {
+        embed.addFields({
+            name: "Session permissions",
+            value: "`index queue` - Required to execute the command",
+            inline: false,
+        });
+    }
 
     // Usage section
     let usageText = "";
@@ -405,6 +416,8 @@ function buildCommandDetailEmbed(commandName, prefix = "e!") {
         usageText += `\`\`\`${prefix}permissions deny all <role|user|everyone>\`\`\`\n`;
         usageText += `\`\`\`${prefix}permissions reset <role|user|everyone|all>\`\`\`\n`;
         usageText += `\`\`\`${prefix}permissions [role|user|everyone]\`\`\`\n`;
+    } else if (foundCmd.name === "sort") {
+        usageText = "```e!sort <sort type> <start over>```";
     } else {
         usageText = `\`\`\`${prefix}${foundCmd.usage || foundCmd.name}\`\`\``;
     }
@@ -436,7 +449,9 @@ function buildCommandDetailEmbed(commandName, prefix = "e!") {
     }
 
     // Category section
-    embed.addFields({ name: "Category", value: foundCategory, inline: false });
+    if (foundCmd.name !== "sort") {
+        embed.addFields({ name: "Category", value: foundCategory, inline: false });
+    }
 
     const backButton = new ButtonBuilder()
         .setCustomId("help_nav_back")
@@ -446,6 +461,33 @@ function buildCommandDetailEmbed(commandName, prefix = "e!") {
     const row = new ActionRowBuilder().addComponents(backButton);
 
     return { embed, components: [row] };
+}
+
+function getCommandHelpInfo(commandName) {
+    const normalize = (value) =>
+        String(value || "")
+            .toLowerCase()
+            .replace(/[-_]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+    const normalizedName = normalize(commandName);
+
+    for (const page of HELP_PAGES) {
+        for (const section of page.sections) {
+            for (const command of section.commands) {
+                if (
+                    normalize(command.name) === normalizedName ||
+                    command.aliases?.some(
+                        (alias) => normalize(alias) === normalizedName
+                    )
+                ) {
+                    return command;
+                }
+            }
+        }
+    }
+
+    return null;
 }
 
 module.exports = {
@@ -597,4 +639,6 @@ module.exports = {
             components: components,
         });
     },
+    buildCommandDetailEmbed,
+    getCommandHelpInfo,
 };

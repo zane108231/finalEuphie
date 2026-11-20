@@ -1,4 +1,4 @@
-const { getGuildData, saveGuildData, deleteGuildData } = require("../utils/mongoGuildData");
+const { getGuildData, deleteGuildData } = require("../utils/mongoGuildData");
 const { createChatPlayIdleContainer } = require("../utils/components");
 const { EmbedBuilder, MessageFlags } = require("discord.js");
 const { addSessionParticipant, removeSessionParticipant } = require("../utils/mongoStats");
@@ -7,113 +7,11 @@ const {
     getHumanVoiceMembers,
     isHumanVoiceMember,
 } = require("../utils/voiceMembers");
-const {
-    JOCKIE_BOT_IDS,
-    consumeJockieCommand,
-} = require("../utils/jockieJoinContext");
 const recentDisconnectNotices = new Set();
-const recentJockieJoinNotices = new Set();
 
 module.exports = {
     name: "voiceStateUpdate",
     async execute(client, oldState, newState) {
-        const primaryClient = coordinator.getClient(
-            coordinator.primaryBotId || "euphie_main"
-        );
-        const joinedChannel =
-            newState.channelId && oldState.channelId !== newState.channelId;
-        const isBot = newState.member?.user?.bot;
-        const botUsername = newState.member?.user?.username || "";
-        if (
-            joinedChannel &&
-            isBot &&
-            /jockie/i.test(botUsername) &&
-            !JOCKIE_BOT_IDS.has(newState.id)
-        ) {
-            console.warn(
-                `[euphire] Jockie bot joined with unconfigured user ID ${newState.id}`
-            );
-        }
-
-        const joinedJockie =
-            joinedChannel &&
-            isBot &&
-            JOCKIE_BOT_IDS.has(newState.id);
-
-        if (joinedJockie && client === primaryClient) {
-            const noticeKey =
-                `${newState.guild.id}:${newState.channelId}:${newState.id}`;
-            if (!recentJockieJoinNotices.has(noticeKey)) {
-                recentJockieJoinNotices.add(noticeKey);
-                const noticeCleanup = setTimeout(
-                    () => recentJockieJoinNotices.delete(noticeKey),
-                    15000
-                );
-                noticeCleanup.unref?.();
-
-                console.log(
-                    `[euphire] Detected Jockie bot ${newState.id} joining voice channel ${newState.channelId}`
-                );
-                const joinContext = consumeJockieCommand(
-                    newState.guild.id,
-                    newState.channelId
-                );
-                const primaryGuild =
-                    primaryClient.guilds.cache.get(newState.guild.id);
-                let targetChannel = joinContext
-                    ? primaryClient.channels.cache.get(
-                          joinContext.textChannelId
-                      )
-                    : null;
-                if (!targetChannel && joinContext && primaryGuild) {
-                    targetChannel =
-                        primaryGuild.channels.cache.get(
-                            joinContext.textChannelId
-                        ) || null;
-                    if (!targetChannel) {
-                        try {
-                            targetChannel = await primaryClient.channels.fetch(
-                                joinContext.textChannelId
-                            );
-                        } catch (error) {
-                            console.warn(
-                                `[euphire] Could not fetch command channel ${joinContext.textChannelId} through the primary bot: ${error.message}`
-                            );
-                        }
-                    }
-                }
-                if (!targetChannel) {
-                    targetChannel =
-                        primaryClient.channels.cache.get(newState.channelId) ||
-                        primaryGuild?.channels.cache.get(newState.channelId) ||
-                        null;
-                }
-
-                if (targetChannel?.send) {
-                    const embed = new EmbedBuilder()
-                        .setColor(0xf4a7c7)
-                        .setDescription(
-                            "Sige lang, si Jockie muna. 🥺\n\nKapag gusto mo naman akong subukan, gamitin mo lang ang `e!join`."
-                        );
-                    try {
-                        await targetChannel.send({ embeds: [embed] });
-                        console.log(
-                            `[euphire] Sent Jockie join message to channel ${targetChannel.id}`
-                        );
-                    } catch (error) {
-                        console.error(
-                            `[euphire] Could not send Jockie join message in channel ${targetChannel.id}:`,
-                            error.message
-                        );
-                    }
-                } else {
-                    console.warn(
-                        `[euphire] Jockie joined channel ${newState.channelId}, but no text-sendable channel was found`
-                    );
-                }
-            }
-        }
-
         // Track shared listening: user joins/leaves voice channel while music is playing
         const member = newState.member || oldState.member;
         if (oldState.id !== client.user.id && isHumanVoiceMember(member)) {
@@ -240,19 +138,47 @@ module.exports = {
             disconnectedBotId = client.botId;
         }
 
-        if (disconnectedBotId && oldState.channelId && !newState.channelId) {
+        if (
+            disconnectedBotId === client.botId &&
+            oldState.channelId &&
+            !newState.channelId
+        ) {
             const targetClient = coordinator.getClient(disconnectedBotId) || client;
-            const guildData = getGuildData(oldState.guild.id);
-            if (guildData.recreatingPlayer) return;
-
-            // Clear idle timeout if it exists
-            if (guildData.idleTimeout) {
-                clearTimeout(guildData.idleTimeout);
-                guildData.idleTimeout = null;
-                console.log(`[euphire] Cleared idle timeout for bot ${disconnectedBotId} (manual disconnect)`);
-            }
-
             const player = targetClient.riffy?.players?.get(oldState.guild.id);
+            if (player?._waitingRoom) {
+                if (player.idleTimeout) clearTimeout(player.idleTimeout);
+                if (!player._intentionalDisconnect) {
+                    console.warn(
+                        `[euphire] Waiting-room bot ${disconnectedBotId} disconnected from guild ${oldState.guild.id}`
+                    );
+                }
+                try {
+                    const { joinClientToWaitingRoom } = require("../utils/waitingRoom");
+                    const result = await joinClientToWaitingRoom(
+                        targetClient,
+                        oldState.guild.id
+                    );
+                    if (result.status === "joined" || result.status === "already") {
+                        if (!coordinator.botSessions.get(disconnectedBotId)?.size) {
+                            coordinator.markBotAvailable(disconnectedBotId);
+                        }
+                        return;
+                    }
+                    console.warn(
+                        `[euphire] Could not restore waiting-room bot ${disconnectedBotId}: ${result.status}`
+                    );
+                } catch (error) {
+                    console.error(
+                        `[euphire] Failed to restore waiting-room bot ${disconnectedBotId}:`,
+                        error
+                    );
+                }
+                player.destroy();
+                if (!coordinator.botSessions.get(disconnectedBotId)?.size) {
+                    coordinator.markBotAvailable(disconnectedBotId);
+                }
+                return;
+            }
             const wasIntentionalDisconnect =
                 player?._intentionalDisconnect === true;
             if (player) {
@@ -264,7 +190,14 @@ module.exports = {
                 if (player.currentSessionId) {
                     const { endSession } = require("../utils/mongoStats");
                     const listenedMs = player.position || (player.sessionStartedAt ? Date.now() - player.sessionStartedAt : 0);
-                    await endSession(player.currentSessionId, false, listenedMs).catch(() => {});
+                    try {
+                        await endSession(player.currentSessionId, false, listenedMs);
+                    } catch (error) {
+                        console.error(
+                            `[euphire] Failed to end stats session after ${disconnectedBotId} was manually disconnected:`,
+                            error
+                        );
+                    }
                     player.currentSessionId = null;
                 }
             }
@@ -326,41 +259,110 @@ module.exports = {
                 }
             }
 
-            await coordinator.releaseBot(oldState.channelId);
+            await coordinator.releaseBot(oldState.channelId, disconnectedBotId);
             if (player?.voiceChannel && player.voiceChannel !== oldState.channelId) {
-                await coordinator.releaseBot(player.voiceChannel);
+                await coordinator.releaseBot(player.voiceChannel, disconnectedBotId);
             }
-            if (coordinator.botSessions.has(disconnectedBotId)) {
-                for (const vcId of [...coordinator.botSessions.get(disconnectedBotId)]) {
-                    await coordinator.releaseBot(vcId);
-                }
+            const anotherActivePlayer = coordinator.getAllClients().some((otherClient) => {
+                if (otherClient === targetClient) return false;
+                const otherPlayer = otherClient.riffy?.players?.get(oldState.guild.id);
+                return Boolean(otherPlayer?.voiceChannel && !otherPlayer._waitingRoom);
+            });
+            if (!anotherActivePlayer) {
+                await resetChatPlayIfActive(targetClient, oldState.guild.id);
             }
-            coordinator.markBotAvailable(disconnectedBotId);
-
-            guildData.djOwnerId = null;
-            await saveGuildData(oldState.guild.id, guildData);
-
-            await resetChatPlayIfActive(targetClient, oldState.guild.id);
+            let returnedToWaitingRoom = false;
             if (player) {
                 try {
-                    player.destroy();
-                } catch {
-                    // NodeLink often errors destroying an already-dead player
+                    returnedToWaitingRoom =
+                        await require("../utils/waitingRoom")
+                            .returnPlayerToWaitingRoom(targetClient, player);
+                } catch (error) {
+                    console.error(
+                        `[euphire] Failed to return ${disconnectedBotId} to the waiting room after manual disconnect:`,
+                        error
+                    );
                 }
+            } else {
+                try {
+                    const { joinClientToWaitingRoom } = require("../utils/waitingRoom");
+                    const result = await joinClientToWaitingRoom(
+                        targetClient,
+                        oldState.guild.id
+                    );
+                    returnedToWaitingRoom =
+                        result.status === "joined" || result.status === "already";
+                } catch (error) {
+                    console.error(
+                        `[euphire] Failed to restore ${disconnectedBotId} to the waiting room after manual disconnect:`,
+                        error
+                    );
+                }
+            }
+            if (!returnedToWaitingRoom && player) {
+                try {
+                    player.destroy();
+                } catch (error) {
+                    console.warn(
+                        `[euphire] Could not destroy disconnected player for ${disconnectedBotId}:`,
+                        error.message
+                    );
+                }
+            }
+            if (!coordinator.botSessions.get(disconnectedBotId)?.size) {
+                coordinator.markBotAvailable(disconnectedBotId);
             }
             return;
         }
 
         // Handle bot being moved between voice channels
-        if (disconnectedBotId && oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
+        if (
+            disconnectedBotId === client.botId &&
+            oldState.channelId &&
+            newState.channelId &&
+            oldState.channelId !== newState.channelId
+        ) {
             console.log(`[euphire] Bot ${disconnectedBotId} moved from VC ${oldState.channelId} to ${newState.channelId}`);
-            await coordinator.releaseBot(oldState.channelId);
-            await coordinator.reserveSpecificBot(newState.channelId, null, disconnectedBotId, oldState.guild.id, true);
-            await coordinator.markBotActive(disconnectedBotId, newState.channelId);
             const targetClient = coordinator.getClient(disconnectedBotId) || client;
             const player = targetClient.riffy?.players?.get(oldState.guild.id);
+            const movedFromStandby =
+                player?._waitingRoom || player?._movingFromWaitingRoom;
+            if (!movedFromStandby) {
+                await coordinator.releaseBot(oldState.channelId, disconnectedBotId);
+            }
+            if (
+                player?._waitingRoom &&
+                require("../utils/waitingRoom").isWaitingRoomChannel(
+                    oldState.guild.id,
+                    newState.channelId
+                )
+            ) {
+                coordinator.markBotAvailable(disconnectedBotId);
+                return;
+            }
+            const targetOwner = coordinator.resolveSessionOwner(
+                newState.channelId,
+                oldState.guild
+            );
+            if (targetOwner && targetOwner !== disconnectedBotId) {
+                console.warn(
+                    `[euphire] Bot ${disconnectedBotId} moved into VC ${newState.channelId}, already owned by ${targetOwner}`
+                );
+                return;
+            }
+            const reserved = await coordinator.reserveSpecificBot(
+                newState.channelId,
+                null,
+                disconnectedBotId,
+                oldState.guild.id,
+                true
+            );
+            if (!reserved) return;
+            await coordinator.markBotActive(disconnectedBotId, newState.channelId);
             if (player) {
                 player.voiceChannel = newState.channelId;
+                player._waitingRoom = false;
+                delete player._movingFromWaitingRoom;
             }
         }
     },

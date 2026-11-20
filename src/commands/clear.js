@@ -13,6 +13,16 @@ module.exports = {
 
         const hasQueuedTracks = (player.queue?.length || 0) > 0;
         const isPlaying = Boolean(player.playing || player.paused);
+        let returnedToWaitingRoom = false;
+        try {
+            returnedToWaitingRoom = await require("../utils/waitingRoom")
+                .returnPlayerToWaitingRoom(client, player);
+        } catch (error) {
+            console.error(
+                `[euphire] Failed to return ${client.botId} to the waiting room after clear command:`,
+                error
+            );
+        }
         if (!hasQueuedTracks && !isPlaying) {
             const embed = new EmbedBuilder()
                 .setColor(0xED4245)
@@ -23,15 +33,15 @@ module.exports = {
             });
         }
 
-        if (typeof player.queue?.clear === "function") {
+        if (!returnedToWaitingRoom && typeof player.queue?.clear === "function") {
             player.queue.clear();
-        } else if (Array.isArray(player.queue)) {
+        } else if (!returnedToWaitingRoom && Array.isArray(player.queue)) {
             player.queue.length = 0;
-        } else {
+        } else if (!returnedToWaitingRoom) {
             throw new TypeError("The player's queue does not support clearing.");
         }
 
-        if (isPlaying) {
+        if (!returnedToWaitingRoom && isPlaying) {
             player._clearQueueRequested = true;
             player._clearQueueLoopMode = player.loop || "none";
             player.setLoop("none");
@@ -50,14 +60,16 @@ module.exports = {
         }
 
         let persistError = null;
-        try {
-            await require("../utils/playbackRecovery").persistPlayer(client, player);
-        } catch (error) {
-            persistError = error;
-            console.error(
-                `[euphire] Failed to persist cleared playback for guild ${player.guildId}:`,
-                error
-            );
+        if (!returnedToWaitingRoom) {
+            try {
+                await require("../utils/playbackRecovery").persistPlayer(client, player);
+            } catch (error) {
+                persistError = error;
+                console.error(
+                    `[euphire] Failed to persist cleared playback for guild ${player.guildId}:`,
+                    error
+                );
+            }
         }
 
         const embed = new EmbedBuilder()

@@ -1,4 +1,10 @@
-const { MessageFlags } = require("discord.js");
+const {
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    EmbedBuilder,
+    MessageFlags,
+} = require("discord.js");
 const { DEFAULT_PREFIX, getPrefix } = require("./prefixStore");
 
 const PREFIX = DEFAULT_PREFIX;
@@ -121,6 +127,118 @@ function sanitizePayload(payload) {
     return out;
 }
 
+function createUsageHelpPayload(message, command, payload) {
+    const content =
+        typeof payload === "string"
+            ? payload
+            : payload?.content ||
+              payload?.embeds?.[0]?.description ||
+              payload?.embeds?.[0]?.data?.description ||
+              "";
+    if (!/\busage\b/i.test(content)) return payload;
+
+    const helpCommand = require("../commands/help");
+    const commandName = command.data?.name || "command";
+    let helpInfo = helpCommand.getCommandHelpInfo(commandName);
+    const usageMatch = content.match(/\busage\b\s*:?\s*/i);
+    const usageRemainder = content.slice(
+        usageMatch.index + usageMatch[0].length
+    );
+    let usages = [];
+    const codeBlock = usageRemainder.match(/```(?:[a-z]*)\s*([\s\S]*?)```/i);
+    if (codeBlock) {
+        usages = codeBlock[1]
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+    } else {
+        const usageLines = usageRemainder.split(/\r?\n/);
+        const firstUsageLine = usageLines.findIndex((line) =>
+            line.replace(/^\*+/, "").trim()
+        );
+        if (firstUsageLine !== -1) {
+            const startsWithList = /^[\s>*-]*[•*-]\s*/.test(
+                usageLines[firstUsageLine]
+            );
+            if (startsWithList) {
+                for (
+                    let index = firstUsageLine;
+                    index < usageLines.length;
+                    index++
+                ) {
+                    const line = usageLines[index]
+                        .replace(/^\*+/, "")
+                        .trim();
+                    if (!line) break;
+                    if (!/^[>*-]*[•*-]\s*/.test(line)) break;
+                    const code = line.match(/`{1,3}([^`\r\n]+)`{1,3}/);
+                    if (code) usages.push(code[1].trim());
+                }
+            } else {
+                const firstLine = usageLines[firstUsageLine]
+                    .replace(/^\*+/, "")
+                    .trim();
+                const codeBlocks = [
+                    ...firstLine.matchAll(/`{1,3}([^`\r\n]+)`{1,3}/g),
+                ];
+                const hasAlternatives = /\s+or\s+/i.test(
+                    firstLine.replace(/`[^`]*`/g, " ")
+                );
+                usages = codeBlocks.length
+                    ? (hasAlternatives
+                          ? codeBlocks
+                          : codeBlocks.slice(0, 1)
+                      ).map((code) => code[1].trim())
+                    : [firstLine];
+            }
+        }
+    }
+    if (!usages.length) usages = [helpInfo?.usage || commandName];
+    usages = usages.map((usage) =>
+        usage
+            .replace(/^[\s>*•-]+/, "")
+            .replace(/^(?:<@!?\d+>\s*)?(?:[^\s`]+!|!)\s*/i, "")
+            .replace(/^\/\s*/, "")
+    );
+    const usageCommand = usages[0].split(/\s*[<[]/)[0].trim();
+    const detailedHelpInfo = helpCommand.getCommandHelpInfo(usageCommand);
+    if (
+        detailedHelpInfo &&
+        (!helpInfo || detailedHelpInfo.name.length > helpInfo.name.length)
+    ) {
+        helpInfo = detailedHelpInfo;
+    }
+    const usageText = usages.map((usage) => `e!${usage}`).join("\n");
+
+    const description =
+        helpInfo?.desc ||
+        command.data?.toJSON?.().description ||
+        command.data?.description ||
+        "Command information";
+    const embed = new EmbedBuilder()
+        .setColor(0x2b2d31)
+        .setAuthor({
+            name: "Help",
+            iconURL: message.client.user.displayAvatarURL(),
+        })
+        .setDescription(
+            `**Usage:** ${usageText}\n**Description:** ${description}`
+        );
+    const button = new ButtonBuilder()
+        .setCustomId(
+            `prefix_usage_help:${encodeURIComponent(
+                helpInfo?.name || commandName
+            )}`
+        )
+        .setLabel("Help")
+        .setStyle(ButtonStyle.Success);
+
+    return {
+        embeds: [embed],
+        components: [new ActionRowBuilder().addComponents(button)],
+    };
+}
+
 /**
  * Fake ChatInputCommandInteraction backed by a guild message.
  * Prefix replies skip Discord's slash "thinking" state.
@@ -197,11 +315,23 @@ function createPrefixInteraction(message, command, args) {
         },
         async reply(payload) {
             interaction.replied = true;
-            replyMessage = await message.channel.send(sanitizePayload(payload));
+            const helpPayload = createUsageHelpPayload(
+                message,
+                command,
+                payload
+            );
+            replyMessage = await message.channel.send(
+                sanitizePayload(helpPayload)
+            );
             return replyMessage;
         },
         async editReply(payload) {
-            const cleaned = sanitizePayload(payload);
+            const helpPayload = createUsageHelpPayload(
+                message,
+                command,
+                payload
+            );
+            const cleaned = sanitizePayload(helpPayload);
             if (replyMessage) {
                 return replyMessage.edit(cleaned);
             }
@@ -220,6 +350,9 @@ function createPrefixInteraction(message, command, args) {
                 await replyMessage.delete().catch(() => {});
                 replyMessage = null;
             }
+        },
+        async fetchReply() {
+            return replyMessage;
         },
     };
 

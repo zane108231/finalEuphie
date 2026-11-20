@@ -1,15 +1,19 @@
 const { MessageFlags } = require("discord.js");
 const { getGuildData } = require("../utils/mongoGuildData");
-const { createChatPlayLoadingContainer } = require("../utils/components");
+const {
+    createChatPlayLoadingContainer,
+    createCouldNotPlayEmbed,
+} = require("../utils/components");
 const { startIfIdle, ensurePlayer, getOccupiedVoiceChannel, buildNoBotsAvailablePayload } = require("../utils/playback");
 const { createNotInVoiceChannelEmbed } = require("../utils/permissions");
 
 async function sendChatPlayFeedback(channel, content, timeoutMs = 5000) {
     try {
-        const feedback = await channel.send({ content });
+        const payload = typeof content === "string" ? { content } : content;
+        const feedback = await channel.send(payload);
         setTimeout(() => feedback.delete().catch(() => {}), timeoutMs);
-    } catch (err) {
-        // Can't send in channel — ignore
+    } catch (error) {
+        console.error("[euphire] Failed to send ChatPlay feedback:", error.message);
     }
 }
 
@@ -152,6 +156,7 @@ async function handleChatPlayMessage(client, message) {
                 return true;
             }
 
+            const spotifyTrack = track;
             track = await require("../utils/search").resolveSpotifyTrackAudio(
                 client.riffy,
                 track,
@@ -160,7 +165,7 @@ async function handleChatPlayMessage(client, message) {
             if (!track) {
                 await sendChatPlayFeedback(
                     message.channel,
-                    "❌ Spotify found the track, but no matching playable audio was found."
+                    { embeds: [createCouldNotPlayEmbed(spotifyTrack)] }
                 );
                 return true;
             }

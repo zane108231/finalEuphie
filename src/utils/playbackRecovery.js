@@ -107,7 +107,7 @@ function scheduleResumeTimeout(client, player, snapshot) {
             pendingSnapshot.voiceChannelId || player.voiceChannel;
         if (voiceChannelId) {
             try {
-                await coordinator.releaseBot(voiceChannelId);
+                await coordinator.releaseBot(voiceChannelId, client.botId);
             } catch (error) {
                 console.error(
                     `[euphire] Could not release expired voice session ${voiceChannelId}:`,
@@ -181,13 +181,14 @@ async function saveRecentlyPlayedTrack(track) {
         { userId: requesterId },
         {
             $set: { userId: requesterId, updatedAt: Date.now() },
-            $push: { tracks: { $each: [savedTrack], $slice: -20 } },
+            $push: { tracks: savedTrack },
         },
         { upsert: true }
     );
 }
 
 async function writePlayerSnapshot(client, player) {
+    if (player?._waitingRoom) return;
     const queue = Array.from(player.queue || [])
         .map((track) => serializeTrack(track))
         .filter(Boolean);
@@ -239,6 +240,7 @@ function persistPlayer(client, player) {
     if (
         !client ||
         !player?.guildId ||
+        player._waitingRoom ||
         player._restoringSession ||
         player._pendingResumeSnapshot
     ) {
@@ -264,7 +266,7 @@ function persistPlayer(client, player) {
 }
 
 function schedulePersist(client, player) {
-    if (player._restoringSession) return;
+    if (player._waitingRoom || player._restoringSession) return;
 
     clearTimeout(player._sessionPersistTimeout);
     player._sessionPersistTimeout = setTimeout(() => {
@@ -311,6 +313,7 @@ function installPlayerPersistence(client, player) {
 async function checkpointClient(client) {
     const players = Array.from(client?.riffy?.players?.values?.() || []);
     for (const player of players) {
+        if (player._waitingRoom) continue;
         await persistPlayer(client, player);
     }
 }
@@ -527,7 +530,10 @@ async function prepareSnapshot(client, snapshot) {
             snapshot.guildId,
             snapshot.botId || client.botId
         );
-        await coordinator.releaseBot(snapshot.voiceChannelId);
+        await coordinator.releaseBot(
+            snapshot.voiceChannelId,
+            snapshot.botId || client.botId
+        );
         player.destroy();
         throw new Error("None of the saved tracks are available anymore.");
     }

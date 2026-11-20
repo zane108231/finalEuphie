@@ -1,6 +1,7 @@
 const {
     ContainerBuilder,
     TextDisplayBuilder,
+    EmbedBuilder,
     SeparatorBuilder,
     MediaGalleryBuilder,
     MediaGalleryItemBuilder,
@@ -14,6 +15,7 @@ const {
 const { ButtonStyle } = require("discord.js");
 const {
     getSpotifyTrackDisplayName,
+    getSpotifyTrackFailureName,
     getSpotifyTrackUrl,
 } = require("./search");
 
@@ -119,6 +121,23 @@ function createNowPlayingContainer(track, player, guildData, musicardBuffer, cli
     );
 
     return container;
+}
+
+function getCouldNotPlayDescription(track) {
+    const trackName = getSpotifyTrackFailureName(track);
+    if (!trackName) return "Could not find any audio source";
+
+    const spotifyUrl = getSpotifyTrackUrl(track);
+    const linkedTrackName = spotifyUrl
+        ? `**[${trackName}](${spotifyUrl})**`
+        : `**${trackName}**`;
+    return `Could not find any audio source for ${linkedTrackName}`;
+}
+
+function createCouldNotPlayEmbed(track) {
+    return new EmbedBuilder()
+        .setColor(0xed4245)
+        .setDescription(getCouldNotPlayDescription(track));
 }
 
 /**
@@ -242,6 +261,8 @@ function capitalize(str) {
 module.exports = {
     getSpotifyEmoji,
     createNowPlayingContainer,
+    createCouldNotPlayEmbed,
+    getCouldNotPlayDescription,
     createQueueContainer,
     formatDuration,
     safeArtworkUrl,

@@ -3,6 +3,8 @@ const { getGuildData, saveGuildData, clearUpdateInterval } = require("../utils/m
 const { getUserData } = require("../utils/mongoUserData");
 const {
     createNowPlayingContainer,
+    createCouldNotPlayEmbed,
+    getCouldNotPlayDescription,
     getSpotifyEmoji,
 } = require("../utils/components");
 const { recordIncident } = require("../utils/incidents");
@@ -20,6 +22,7 @@ const { startPlayerTracking, stopPlayerTracking } = require("../utils/modelMiles
 const { updateNowPlaying, scrobble } = require("../utils/lastfm");
 const {
     getSpotifyTrackDisplayName,
+    getSpotifyTrackFailureName,
     getSpotifyTrackUrl,
     findSpotifyTrackMetadata,
     applySpotifyTrackMetadata,
@@ -37,24 +40,43 @@ const UPDATE_INTERVAL_MS = 30 * 1000; // Increased to 30 seconds to reduce CPU l
 const voiceChannelMonitoringIntervals = new Map();
 const VOICE_CHANNEL_MONITOR_INTERVAL_MS = 5000;
 
-function queueTrackErrorNotice(channel, guildId) {
+function queueTrackErrorNotice(channel, guildId, track) {
     let notice = trackErrorNotices.get(guildId);
     if (!notice) {
-        notice = { count: 0, timer: null };
+        notice = { tracks: [], timer: null };
         trackErrorNotices.set(guildId, notice);
     }
 
-    notice.count++;
+    const trackName = track ? getSpotifyTrackFailureName(track) : null;
+    const spotifyUrl = track ? getSpotifyTrackUrl(track) : null;
+    const trackKey = spotifyUrl || trackName;
+    if (
+        trackKey &&
+        !notice.tracks.some(
+            (failedTrack) =>
+                (getSpotifyTrackUrl(failedTrack) ||
+                    getSpotifyTrackFailureName(failedTrack)) === trackKey
+        )
+    ) {
+        notice.tracks.push(track);
+    }
     clearTimeout(notice.timer);
     notice.timer = setTimeout(() => {
         trackErrorNotices.delete(guildId);
-        const embed = new EmbedBuilder()
-            .setColor(0xed4245)
-            .setDescription(
-                notice.count === 1
-                    ? "Could not play that song."
-                    : `Could not play ${notice.count} songs. They were skipped.`
+        const failures = notice.tracks
+            .slice(0, 5)
+            .map(getCouldNotPlayDescription);
+        if (!failures.length) {
+            failures.push("Could not find any audio source");
+        }
+        const omittedCount = Math.max(0, notice.tracks.length - 5);
+        if (omittedCount) {
+            failures.push(
+                `Could not find any audio source for ${omittedCount} more track(s)`
             );
+        }
+        const embed = createCouldNotPlayEmbed(notice.tracks[0]);
+        embed.setDescription(failures.join("\n"));
         channel.send({ embeds: [embed] }).catch((error) => {
             console.error("[euphire] Failed to send track error summary:", error.message);
         });
@@ -462,7 +484,7 @@ function setupPlayerHandler(client) {
             const channel = client.channels.cache.get(player.voiceChannel);
             if (!channel) {
                 console.log(`[euphire] Voice channel ${player.voiceChannel} no longer exists, releasing bot ${client.botId}`);
-                await coordinator.releaseBot(player.voiceChannel);
+                await coordinator.releaseBot(player.voiceChannel, client.botId);
                 player.destroy();
                 return;
             }
@@ -628,11 +650,7 @@ function setupPlayerHandler(client) {
                     player.currentSessionId = sessionId;
                     player.sessionStartedAt = Date.now();
                     player.sessionUserId = userId;
-                    guildData.currentSessionId = sessionId;
                     console.log(`[euphire] [${client.botId}] Started stats session:`, sessionId, "for user:", userId, "track:", track.info.title, "duration:", track.info.length);
-                    
-                    // Save guildData to persist state
-                    await saveGuildData(player.guildId, guildData);
 
                     // Add current voice channel members as participants
                     const voiceChannel = client.channels.cache.get(player.voiceChannel);
@@ -786,10 +804,9 @@ function setupPlayerHandler(client) {
 
             // Only completed tracks should count as natural completions.
             try {
-                const sessionIdToEnd = player.currentSessionId || guildData.currentSessionId;
+                const sessionIdToEnd = player.currentSessionId;
                 if (sessionIdToEnd) {
                     player.currentSessionId = null;
-                    guildData.currentSessionId = null;
                     const completedNaturally =
                         String(payload?.reason || "").toLowerCase() === "finished";
                     console.log(
@@ -801,7 +818,6 @@ function setupPlayerHandler(client) {
                         completedNaturally,
                         completedNaturally ? null : player.position
                     );
-                    await saveGuildData(player.guildId, guildData);
                 }
             } catch (err) {
                 console.error("[euphire] Failed to end stats session on track end:", err.message);
@@ -814,6 +830,7 @@ function setupPlayerHandler(client) {
     // --- Queue End ---
     client.riffy.on("queueEnd", async (player) => {
         try {
+            if (player._waitingRoom || player._returningToWaitingRoom) return;
             if (player._restoringSession || player._pendingResumeSnapshot) {
                 console.log(
                     `[euphire] Ignoring queueEnd while restoring saved session for guild ${player.guildId}`
@@ -833,7 +850,7 @@ function setupPlayerHandler(client) {
             const channel = client.channels.cache.get(player.voiceChannel);
             if (!channel) {
                 console.log(`[euphire] Voice channel ${player.voiceChannel} no longer exists, releasing bot ${client.botId}`);
-                await coordinator.releaseBot(player.voiceChannel);
+                await coordinator.releaseBot(player.voiceChannel, client.botId);
                 player.destroy();
                 return;
             }
@@ -867,13 +884,11 @@ function setupPlayerHandler(client) {
 
             // End statistics tracking session (natural completion)
             try {
-                const sessionIdToEnd = player.currentSessionId || guildData.currentSessionId;
+                const sessionIdToEnd = player.currentSessionId;
                 if (sessionIdToEnd) {
                     console.log(`[euphire] [${client.botId}] queueEnd: ending session (natural completion), sessionId:`, sessionIdToEnd);
                     await endSession(sessionIdToEnd, true);
                     player.currentSessionId = null;
-                    guildData.currentSessionId = null;
-                    await saveGuildData(player.guildId, guildData);
                     console.log("[euphire] queueEnd: session ended successfully");
                 }
             } catch (err) {
@@ -882,10 +897,12 @@ function setupPlayerHandler(client) {
             }
 
             // Stop the auto-update interval
-            clearUpdateInterval(guildData);
+            if (!hasOtherActivePlayer(client, player.guildId)) {
+                clearUpdateInterval(guildData);
+            }
 
             // Stop voice channel monitoring
-            stopVoiceChannelMonitoring(player.guildId);
+            stopVoiceChannelMonitoring(player.guildId, client.botId);
 
             // Riffy leaves player.current on the finished track. Clear it so
             // the next !play starts playback instead of only enqueueing.
@@ -894,9 +911,8 @@ function setupPlayerHandler(client) {
             // Resolve the specific channel assigned to this bot and its DJ
             const assignedChannel = resolveAssignedChannel(client, player, guildData);
 
-            if (guildData.leaveAfterQueueEnd) {
-                guildData.leaveAfterQueueEnd = false;
-                await saveGuildData(player.guildId, guildData);
+            if (player.leaveAfterQueueEnd) {
+                player.leaveAfterQueueEnd = false;
                 await require("../utils/playbackRecovery")
                     .removeSavedSession(player.guildId, client.botId)
                     .catch((err) => {
@@ -905,10 +921,21 @@ function setupPlayerHandler(client) {
                             err.message
                         );
                     });
-                stopVoiceChannelMonitoring(player.guildId);
-                await coordinator.releaseBot(player.voiceChannel);
-                markIntentionalDisconnect(player);
-                player.destroy();
+                stopVoiceChannelMonitoring(player.guildId, client.botId);
+                const returnedToWaitingRoom = await require("../utils/waitingRoom")
+                    .returnPlayerToWaitingRoom(client, player)
+                    .catch((error) => {
+                        console.error(
+                            `[euphire] Failed to return ${client.botId} to the waiting room after playleave in guild ${player.guildId}:`,
+                            error
+                        );
+                        return false;
+                    });
+                if (!returnedToWaitingRoom) {
+                    await coordinator.releaseBot(player.voiceChannel, client.botId);
+                    markIntentionalDisconnect(player);
+                    player.destroy();
+                }
                 return;
             }
 
@@ -962,8 +989,9 @@ function setupPlayerHandler(client) {
                 await sendQueueEmptyNotice(assignedChannel, player.guildId, player.voiceChannel, client);
             }
 
-            // Clear suggestions
-            guildData.suggestions = [];
+            if (!hasOtherActivePlayer(client, player.guildId)) {
+                guildData.suggestions = [];
+            }
         } catch (error) {
             console.error("[euphire] queueEnd error:", error);
         }
@@ -972,66 +1000,45 @@ function setupPlayerHandler(client) {
     // --- Player Disconnect ---
     client.riffy.on("playerDisconnect", async (player) => {
         const guildData = getGuildData(player.guildId);
+        if (player._waitingRoom) {
+            if (player.idleTimeout) clearTimeout(player.idleTimeout);
+            return;
+        }
         await stopPlayerTracking(player, true);
         if (guildData.recreatingPlayer) return;
 
         console.log(`[euphire] playerDisconnect fired for bot ${client.botId} in guild ${player.guildId}`);
 
         // Release bot reservation so it becomes available immediately
-        if (player.voiceChannel) {
-            await coordinator.releaseBot(player.voiceChannel);
+        if (!player._waitingRoom && player.voiceChannel) {
+            await coordinator.releaseBot(player.voiceChannel, client.botId);
         }
-        if (coordinator.botSessions.has(client.botId)) {
-            for (const vcId of [...coordinator.botSessions.get(client.botId)]) {
-                await coordinator.releaseBot(vcId);
-            }
-        }
-        coordinator.markBotAvailable(client.botId);
-        guildData.djOwnerId = null;
 
-        // End statistics tracking session
+        // End this player's statistics session without touching another bot's session.
         try {
-            if (guildData.currentSessionId) {
-                updateSessionProgress(guildData.currentSessionId, player.position || 0);
-                await endSession(guildData.currentSessionId);
-                guildData.currentSessionId = null;
+            if (player.currentSessionId) {
+                updateSessionProgress(player.currentSessionId, player.position || 0);
+                await endSession(player.currentSessionId);
+                player.currentSessionId = null;
             }
         } catch (err) {
             console.error("[euphire] Failed to end stats session on disconnect:", err.message);
         }
 
-        clearUpdateInterval(guildData);
-        stopVoiceChannelMonitoring(player.guildId);
+        stopVoiceChannelMonitoring(player.guildId, client.botId);
         
         // Keep started-playing announcements in channel history.
-        guildData.playerMessageId = null;
-        guildData.playerChannelId = null;
-        guildData.suggestions = [];
-        guildData.previousTracks = [];
-        if (guildData.queuePages && typeof guildData.queuePages.clear === 'function') {
-            guildData.queuePages.clear();
-        } else {
-            guildData.queuePages = {};
-        }
+        player.playerMessageId = null;
+        player.playerChannelId = null;
         if (player.idleTimeout) {
             clearTimeout(player.idleTimeout);
             player.idleTimeout = null;
         }
-        if (guildData.idleTimeout) clearTimeout(guildData.idleTimeout);
-        guildData.idleTimeout = null;
-
-        // End statistics session on player disconnect (not natural completion)
-        try {
-            if (guildData.currentSessionId) {
-                console.log("[euphire] playerDisconnect: ending session (disconnect)");
-                await endSession(guildData.currentSessionId, false);
-                guildData.currentSessionId = null;
-            }
-        } catch (err) {
-            console.error("[euphire] Failed to end stats session on disconnect:", err.message);
-        }
         
-        resetSessionPermissions(player.guildId);
+        if (!hasOtherActivePlayer(client, player.guildId)) {
+            clearUpdateInterval(guildData);
+            resetSessionPermissions(player.guildId);
+        }
     });
 
     // --- Track Error / Stuck ---
@@ -1044,14 +1051,12 @@ function setupPlayerHandler(client) {
         const guildData = getGuildData(player.guildId);
         
         // End statistics session (error - not natural completion)
-        const sessionIdToEnd = player.currentSessionId || guildData.currentSessionId;
+        const sessionIdToEnd = player.currentSessionId;
         player.currentSessionId = null;
-        guildData.currentSessionId = null;
         if (sessionIdToEnd) {
             try {
                 console.log("[euphire] trackError: ending session (error)");
                 await endSession(sessionIdToEnd, false, player.position);
-                await saveGuildData(player.guildId, guildData);
             } catch (err) {
                 console.error("[euphire] Failed to end stats session on track error:", err.message);
             }
@@ -1059,7 +1064,7 @@ function setupPlayerHandler(client) {
         
         const assignedChannel = resolveAssignedChannel(client, player, guildData);
         if (assignedChannel) {
-            queueTrackErrorNotice(assignedChannel, player.guildId);
+            queueTrackErrorNotice(assignedChannel, player.guildId, track);
         }
     });
 
@@ -1068,14 +1073,11 @@ function setupPlayerHandler(client) {
         stopPlayerTracking(player);
         
         // End statistics session (stuck - not natural completion)
-        let freshGuildData = null;
         try {
-            freshGuildData = await getGuildData(player.guildId);
-            if (freshGuildData.currentSessionId) {
+            if (player.currentSessionId) {
                 console.log("[euphire] trackStuck: ending session (stuck)");
-                await endSession(freshGuildData.currentSessionId, false);
-                freshGuildData.currentSessionId = null;
-                await saveGuildData(player.guildId, freshGuildData);
+                await endSession(player.currentSessionId, false);
+                player.currentSessionId = null;
             }
         } catch (err) {
             console.error("[euphire] Failed to end stats session on track stuck:", err.message);
@@ -1084,12 +1086,10 @@ function setupPlayerHandler(client) {
         const assignedChannel = resolveAssignedChannel(
             client,
             player,
-            freshGuildData || getGuildData(player.guildId)
+            getGuildData(player.guildId)
         );
         if (assignedChannel) {
-            const embed = new EmbedBuilder()
-                .setColor(0xed4245)
-                .setDescription("Could not play that song.");
+            const embed = createCouldNotPlayEmbed(track);
             assignedChannel.send({ embeds: [embed] }).catch((error) => {
                 console.error("[euphire] Failed to send track status:", error.message);
             });
@@ -1119,8 +1119,11 @@ function startVoiceChannelMonitoring(client, guildId) {
         }
     }, VOICE_CHANNEL_MONITOR_INTERVAL_MS);
     interval.unref?.();
-    voiceChannelMonitoringIntervals.set(monitorKey, { guildId, interval });
-    getGuildData(guildId).voiceStateTimeout = interval;
+    voiceChannelMonitoringIntervals.set(monitorKey, {
+        botId: client.botId,
+        guildId,
+        interval,
+    });
 }
 
 /**
@@ -1129,7 +1132,11 @@ function startVoiceChannelMonitoring(client, guildId) {
 function checkVoiceChannelState(client, guildId) {
     const player = client.riffy?.players?.get(guildId);
     if (!player?.voiceChannel) {
-        stopVoiceChannelMonitoring(guildId);
+        stopVoiceChannelMonitoring(guildId, client.botId);
+        return;
+    }
+    if (player._waitingRoom) {
+        stopVoiceChannelMonitoring(guildId, client.botId);
         return;
     }
 
@@ -1162,17 +1169,23 @@ function checkVoiceChannelState(client, guildId) {
 /**
  * Stop voice channel monitoring
  */
-function stopVoiceChannelMonitoring(guildId) {
-    const guildData = getGuildData(guildId);
+function stopVoiceChannelMonitoring(guildId, botId) {
     for (const [monitorKey, monitor] of voiceChannelMonitoringIntervals) {
-        if (monitor.guildId !== guildId) continue;
+        if (
+            monitor.guildId !== guildId ||
+            (botId && monitor.botId !== botId)
+        ) continue;
         clearInterval(monitor.interval);
         voiceChannelMonitoringIntervals.delete(monitorKey);
     }
-    if (guildData.voiceStateTimeout) {
-        clearInterval(guildData.voiceStateTimeout);
-        guildData.voiceStateTimeout = null;
-    }
+}
+
+function hasOtherActivePlayer(client, guildId) {
+    return coordinator.getAllClients().some((otherClient) => {
+        if (otherClient === client) return false;
+        const otherPlayer = otherClient.riffy?.players?.get(guildId);
+        return Boolean(otherPlayer?.voiceChannel && !otherPlayer._waitingRoom);
+    });
 }
 
 module.exports = {
