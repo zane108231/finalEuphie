@@ -2,7 +2,7 @@ const { REST, Routes, ActivityType, PermissionFlagsBits } = require("discord.js"
 const { getDB, isDBConnected } = require("../utils/database");
 const { getGuildData } = require("../utils/mongoGuildData");
 const { startStatusMonitor } = require("../services/statusMonitor");
-const DEVELOPER_ID = "766135407590244383";
+const { DEVELOPER_IDS } = require("../utils/developerAccess");
 const DEVELOPER_TEST_GUILD_ID = "1558416950726500415";
 const DEVELOPER_ROLE_NAME = "Euphie Administrator";
 
@@ -44,18 +44,34 @@ async function ensureDeveloperAdminRole(client) {
         );
     }
 
-    const developer = await guild.members.fetch(DEVELOPER_ID);
-    if (developer.user.bot) {
-        throw new Error("The configured developer account is a bot.");
-    }
-    if (!developer.roles.cache.has(role.id)) {
-        await developer.roles.add(
-            role,
-            "Automatic developer access for the configured test server"
-        );
-        console.log(
-            `[euphire] Assigned ${DEVELOPER_ROLE_NAME} to developer ${DEVELOPER_ID} in test guild ${guild.id}`
-        );
+    for (const developerId of DEVELOPER_IDS) {
+        let developer;
+        try {
+            developer = await guild.members.fetch(developerId);
+        } catch (error) {
+            if (error.code !== 10007) {
+                throw error;
+            }
+            console.warn(
+                `[euphire] Developer ${developerId} is not a member of test guild ${guild.id}; skipping role assignment.`
+            );
+            continue;
+        }
+        if (developer.user.bot) {
+            console.warn(
+                `[euphire] Skipping configured developer ${developerId} because it is a bot account.`
+            );
+            continue;
+        }
+        if (!developer.roles.cache.has(role.id)) {
+            await developer.roles.add(
+                role,
+                "Automatic developer access for the configured test server"
+            );
+            console.log(
+                `[euphire] Assigned ${DEVELOPER_ROLE_NAME} to developer ${developerId} in test guild ${guild.id}`
+            );
+        }
     }
 }
 

@@ -1,7 +1,6 @@
 const { MessageFlags, SlashCommandBuilder } = require("discord.js");
 const { removeProfileTrackWording } = require("../utils/mongoStats");
-
-const DEVELOPER_ID = "766135407590244383";
+const { isDeveloper } = require("../utils/developerAccess");
 
 module.exports = {
     primaryOnly: true,
@@ -25,7 +24,7 @@ module.exports = {
         ),
 
     async execute(interaction) {
-        if (interaction.user?.id !== DEVELOPER_ID) {
+        if (!isDeveloper(interaction.user?.id)) {
             return interaction.reply({
                 content: "❌ You are not authorized to use this command.",
                 flags: MessageFlags.Ephemeral,

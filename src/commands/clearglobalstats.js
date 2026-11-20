@@ -9,13 +9,12 @@ const {
     TextInputStyle,
 } = require("discord.js");
 const { clearGlobalProfileStats } = require("../utils/mongoStats");
-
-const DEVELOPER_ID = "766135407590244383";
+const { isDeveloper: isDeveloperId } = require("../utils/developerAccess");
 const CONFIRMATION_PHRASE = "DELETE ALL GLOBAL STATS";
 const BUTTON_PREFIX = "clearglobalstats";
 
 function isDeveloper(interaction) {
-    return interaction.user?.id === DEVELOPER_ID;
+    return isDeveloperId(interaction.user?.id);
 }
 
 module.exports = {
@@ -34,11 +33,13 @@ module.exports = {
 
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
-                .setCustomId(`${BUTTON_PREFIX}:continue:${DEVELOPER_ID}`)
+                .setCustomId(
+                    `${BUTTON_PREFIX}:continue:${interaction.user.id}`
+                )
                 .setLabel("Continue to confirmation")
                 .setStyle(ButtonStyle.Danger),
             new ButtonBuilder()
-                .setCustomId(`${BUTTON_PREFIX}:cancel:${DEVELOPER_ID}`)
+                .setCustomId(`${BUTTON_PREFIX}:cancel:${interaction.user.id}`)
                 .setLabel("Cancel")
                 .setStyle(ButtonStyle.Secondary)
         );
@@ -77,7 +78,7 @@ module.exports = {
         }
 
         const modal = new ModalBuilder()
-            .setCustomId(`${BUTTON_PREFIX}:modal:${DEVELOPER_ID}`)
+            .setCustomId(`${BUTTON_PREFIX}:modal:${ownerId}`)
             .setTitle("Confirm global statistics clear")
             .addComponents(
                 new ActionRowBuilder().addComponents(

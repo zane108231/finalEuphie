@@ -1,7 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require("discord.js");
 const { broadcastToActiveSessions } = require("../utils/sessionBroadcast");
-
-const DEVELOPER_ID = "766135407590244383";
+const { isDeveloper } = require("../utils/developerAccess");
 
 module.exports = {
     primaryOnly: true,
@@ -10,7 +9,7 @@ module.exports = {
         .setDescription("Announce an Euphie update to active music sessions"),
 
     async execute(interaction) {
-        if (interaction.user?.id !== DEVELOPER_ID) {
+        if (!isDeveloper(interaction.user?.id)) {
             return interaction.reply({
                 content: "This command is restricted to the bot developer.",
                 flags: MessageFlags.Ephemeral,

@@ -1,7 +1,6 @@
 const { MessageFlags, SlashCommandBuilder } = require("discord.js");
 const { applyGuildBotSettings } = require("../utils/guildBotProfile");
-
-const DEVELOPER_ID = "766135407590244383";
+const { isDeveloper } = require("../utils/developerAccess");
 const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
 const IMAGE_CONTENT_TYPES = new Set([
     "image/png",
@@ -67,7 +66,7 @@ module.exports = {
         ),
 
     async execute(interaction) {
-        if (interaction.user.id !== DEVELOPER_ID) {
+        if (!isDeveloper(interaction.user?.id)) {
             return interaction.reply({
                 content: "Only the bot developer can use this command.",
                 flags: MessageFlags.Ephemeral,
@@ -113,7 +112,7 @@ module.exports = {
             const result = await applyGuildBotSettings(
                 interaction.guildId,
                 changes,
-                `Server-specific Euphie profile updated by developer ${DEVELOPER_ID}`
+                `Server-specific Euphie profile updated by developer ${interaction.user.id}`
             );
             if (!result.updated.length) {
                 const details = result.errors

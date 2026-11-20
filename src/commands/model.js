@@ -10,12 +10,11 @@ const {
     manuallySetModel,
     setNotificationChannel,
 } = require("../utils/modelMilestones");
-
-const OWNER_ID = "766135407590244383";
+const { isDeveloper } = require("../utils/developerAccess");
 const HOUR_MS = 60 * 60 * 1000;
 
 function isOwner(interaction) {
-    return interaction.user.id === OWNER_ID;
+    return isDeveloper(interaction.user?.id);
 }
 
 function ownerOnlyReply(interaction) {

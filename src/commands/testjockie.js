@@ -3,8 +3,7 @@ const {
     EmbedBuilder,
     MessageFlags,
 } = require("discord.js");
-
-const DEVELOPER_ID = "766135407590244383";
+const { isDeveloper } = require("../utils/developerAccess");
 
 module.exports = {
     primaryOnly: true,
@@ -13,7 +12,7 @@ module.exports = {
         .setDescription("Preview Euphie's Jockie availability response"),
 
     async execute(interaction) {
-        if (interaction.user?.id !== DEVELOPER_ID) {
+        if (!isDeveloper(interaction.user?.id)) {
             return interaction.reply({
                 content: "❌ You are not authorized to use this command.",
                 flags: MessageFlags.Ephemeral,

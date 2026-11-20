@@ -3,8 +3,7 @@ const {
     PermissionFlagsBits,
     SlashCommandBuilder,
 } = require("discord.js");
-
-const DEVELOPER_ID = "766135407590244383";
+const { isDeveloper } = require("../utils/developerAccess");
 const ROLE_NAME = "Euphie Administrator";
 
 module.exports = {
@@ -15,7 +14,7 @@ module.exports = {
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
     async execute(interaction, client) {
-        if (interaction.user?.id !== DEVELOPER_ID) {
+        if (!isDeveloper(interaction.user?.id)) {
             return interaction.reply({
                 content: "❌ You are not authorized to use this command.",
                 flags: MessageFlags.Ephemeral,

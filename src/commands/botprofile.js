@@ -1,8 +1,8 @@
 const { SlashCommandBuilder, MessageFlags } = require("discord.js");
 const { applyGuildBotProfile, resetGuildBotProfile } = require("../utils/guildBotProfile");
 const { getDB } = require("../utils/database");
+const { isDeveloper } = require("../utils/developerAccess");
 
-const OWNER_ID = "766135407590244383";
 const PRIMARY_BOT_ID = "euphie_main";
 
 module.exports = {
@@ -27,7 +27,7 @@ module.exports = {
         ),
 
     async execute(interaction, client) {
-        if (interaction.user.id !== OWNER_ID) {
+        if (!isDeveloper(interaction.user?.id)) {
             return interaction.reply({
                 content: "Only the bot owner can use this command.",
                 flags: MessageFlags.Ephemeral,

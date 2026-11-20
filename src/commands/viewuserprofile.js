@@ -12,8 +12,7 @@ const {
 const { generateProfileCard } = require("../utils/profileCard");
 const { getDB, isDBConnected } = require("../utils/database");
 const coordinator = require("../utils/mongoCoordinator");
-
-const DEVELOPER_ID = "766135407590244383";
+const { isDeveloper } = require("../utils/developerAccess");
 
 function createFallbackUser(userId) {
     const defaultAvatarIndex = Number((BigInt(userId) >> 22n) % 6n);
@@ -82,7 +81,7 @@ module.exports = {
         ),
 
     async execute(interaction, client) {
-        if (interaction.user?.id !== DEVELOPER_ID) {
+        if (!isDeveloper(interaction.user?.id)) {
             return interaction.reply({
                 content: "❌ Only the bot developer can use this command.",
                 flags: MessageFlags.Ephemeral,

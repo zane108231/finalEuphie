@@ -8,8 +8,7 @@ const {
 } = require("discord.js");
 const { getDB, isDBConnected } = require("../utils/database");
 const { getProfileTrackDisplayName } = require("../utils/search");
-
-const DEVELOPER_ID = "766135407590244383";
+const { isDeveloper } = require("../utils/developerAccess");
 const PAGE_SIZE = 8;
 const BUTTON_PREFIX = "profileaudit";
 
@@ -74,7 +73,7 @@ async function loadPage(page) {
     };
 }
 
-function buildPagePayload(data) {
+function buildPagePayload(data, userId) {
     const description = data.users.length
         ? data.users
               .map((user) => {
@@ -114,14 +113,14 @@ function buildPagePayload(data) {
     const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId(
-                `${BUTTON_PREFIX}:${DEVELOPER_ID}:${data.currentPage - 1}`
+                `${BUTTON_PREFIX}:${userId}:${data.currentPage - 1}`
             )
             .setLabel("Previous")
             .setStyle(ButtonStyle.Secondary)
             .setDisabled(data.currentPage <= 0),
         new ButtonBuilder()
             .setCustomId(
-                `${BUTTON_PREFIX}:${DEVELOPER_ID}:${data.currentPage + 1}`
+                `${BUTTON_PREFIX}:${userId}:${data.currentPage + 1}`
             )
             .setLabel("Next")
             .setStyle(ButtonStyle.Secondary)
@@ -138,7 +137,7 @@ module.exports = {
         .setDescription("Browse users' profile track names and IDs (developer only)"),
 
     async execute(interaction) {
-        if (interaction.user?.id !== DEVELOPER_ID) {
+        if (!isDeveloper(interaction.user?.id)) {
             return interaction.reply({
                 content: "❌ Only the bot developer can use this command.",
                 flags: MessageFlags.Ephemeral,
@@ -148,7 +147,9 @@ module.exports = {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         try {
             const data = await loadPage(0);
-            return interaction.editReply(buildPagePayload(data));
+            return interaction.editReply(
+                buildPagePayload(data, interaction.user.id)
+            );
         } catch (error) {
             console.error("[euphire] /profileaudit failed:", error);
             return interaction.editReply({
@@ -166,7 +167,7 @@ module.exports = {
         if (!match) return;
 
         if (
-            interaction.user?.id !== DEVELOPER_ID ||
+            !isDeveloper(interaction.user?.id) ||
             interaction.user.id !== match[1]
         ) {
             return interaction.reply({
@@ -177,7 +178,9 @@ module.exports = {
 
         try {
             const data = await loadPage(Number(match[2]));
-            return interaction.update(buildPagePayload(data));
+            return interaction.update(
+                buildPagePayload(data, interaction.user.id)
+            );
         } catch (error) {
             console.error("[euphire] Profile audit pagination failed:", error);
             return interaction.update({

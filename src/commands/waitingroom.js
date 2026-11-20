@@ -5,8 +5,7 @@ const {
 } = require("discord.js");
 const { getGuildDataAsync, saveGuildData } = require("../utils/mongoGuildData");
 const { reconcileGuildWaitingRoom } = require("../utils/waitingRoom");
-
-const DEVELOPER_ID = "766135407590244383";
+const { isDeveloper } = require("../utils/developerAccess");
 
 function formatResults(results) {
     const joined = results.filter(
@@ -57,7 +56,7 @@ module.exports = {
         ),
 
     async execute(interaction) {
-        if (interaction.user?.id !== DEVELOPER_ID) {
+        if (!isDeveloper(interaction.user?.id)) {
             return interaction.reply({
                 content: "❌ You are not authorized to use this command.",
                 flags: MessageFlags.Ephemeral,
