@@ -219,6 +219,20 @@ async function ensurePlayer(client, {
         voiceChannelId,
         voiceChannelObject
     );
+    if (canLeaveWaitingRoom) {
+        try {
+            await require("./guildBotProfile").setGuildBotAvailability(
+                client,
+                guildId,
+                false
+            );
+        } catch (error) {
+            console.error(
+                `[euphire] Failed to remove the available label from ${client.botId} in guild ${guildId}:`,
+                error
+            );
+        }
+    }
     let player = existingPlayer;
     if (player) {
         if (

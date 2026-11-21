@@ -9,11 +9,81 @@ const { getGuildData } = require("./mongoGuildData");
 const PERSIST_DEBOUNCE_MS = 300;
 const CHECKPOINT_INTERVAL_MS = 10000;
 const RESUME_TIMEOUT_MS = 3 * 60 * 1000;
+const cancelledResumeSnapshots = new Set();
+
+function getResumeSnapshotKey(snapshot) {
+    return `${snapshot.guildId}:${snapshot.botId}`;
+}
+
+function isResumeSnapshotCancelled(snapshot) {
+    return cancelledResumeSnapshots.has(getResumeSnapshotKey(snapshot));
+}
 
 function clearResumeTimeout(player) {
     if (!player?._resumeTimeout) return;
     clearTimeout(player._resumeTimeout);
     player._resumeTimeout = null;
+}
+
+async function cancelPendingResumePlayer(client, player, snapshot) {
+    if (player._resumeCancellationInProgress) {
+        return { returnedToWaitingRoom: false, alreadyCancelling: true, errors: [] };
+    }
+
+    player._resumeCancellationInProgress = true;
+    player._cancelPendingResume = true;
+    clearResumeTimeout(player);
+    clearTimeout(player._sessionPersistTimeout);
+    player._sessionPersistTimeout = null;
+    delete player._pendingResumeSnapshot;
+    player._restoringSession = false;
+    player._returningToWaitingRoom = true;
+
+    const errors = [];
+    try {
+        try {
+            player.queue?.clear?.();
+        } catch (error) {
+            errors.push(`Could not clear the restored queue: ${error.message}`);
+        }
+        try {
+            player.stop?.();
+        } catch (error) {
+            errors.push(`Could not stop the restored player: ${error.message}`);
+        }
+
+        let returnedToWaitingRoom = false;
+        try {
+            returnedToWaitingRoom = await require("./waitingRoom")
+                .returnPlayerToWaitingRoom(client, player);
+        } catch (error) {
+            errors.push(`Could not return the bot to its waiting room: ${error.message}`);
+        }
+
+        if (!returnedToWaitingRoom) {
+            delete player._returningToWaitingRoom;
+            require("./playback").markIntentionalDisconnect(player);
+            try {
+                await player.destroy();
+            } catch (error) {
+                errors.push(`Could not disconnect the restored player: ${error.message}`);
+            }
+
+            const voiceChannelId =
+                snapshot?.voiceChannelId || player.voiceChannel;
+            if (voiceChannelId) {
+                try {
+                    await coordinator.releaseBot(voiceChannelId, client.botId);
+                } catch (error) {
+                    errors.push(`Could not release voice channel ${voiceChannelId}: ${error.message}`);
+                }
+            }
+        }
+
+        return { returnedToWaitingRoom, alreadyCancelling: false, errors };
+    } finally {
+        delete player._resumeCancellationInProgress;
+    }
 }
 
 async function sendResumeExpiredNotice(client, snapshot) {
@@ -51,7 +121,7 @@ async function sendResumeExpiredNotice(client, snapshot) {
         .setTitle("Resume window expired")
         .setDescription(
             "The 3-minute window to run `e!resumesession` has expired. " +
-                "I’m leaving the voice channel now so I’m available for someone else."
+                "I’m leaving this voice channel and returning to the Euphie Waiting Room."
         );
 
     try {
@@ -70,6 +140,7 @@ function scheduleResumeTimeout(client, player, snapshot) {
     const timeout = setTimeout(async () => {
         if (player._resumeTimeout !== timeout) return;
         player._resumeTimeout = null;
+        if (player._cancelPendingResume) return;
 
         const pendingSnapshot = player._pendingResumeSnapshot;
         if (!pendingSnapshot) return;
@@ -89,30 +160,54 @@ function scheduleResumeTimeout(client, player, snapshot) {
                 error.message
             );
         }
+        if (
+            player._cancelPendingResume ||
+            player._pendingResumeSnapshot !== pendingSnapshot
+        ) {
+            return;
+        }
 
         await sendResumeExpiredNotice(client, pendingSnapshot);
-
-        const { markIntentionalDisconnect } = require("./playback");
-        markIntentionalDisconnect(player);
-        try {
-            await player.destroy();
-        } catch (error) {
-            console.warn(
-                `[euphire] Could not destroy expired resume player for guild ${snapshot.guildId}:`,
-                error.message
-            );
+        if (
+            player._cancelPendingResume ||
+            player._pendingResumeSnapshot !== pendingSnapshot
+        ) {
+            return;
         }
 
         const voiceChannelId =
             pendingSnapshot.voiceChannelId || player.voiceChannel;
-        if (voiceChannelId) {
+        let returnedToWaitingRoom = false;
+        try {
+            returnedToWaitingRoom = await require("./waitingRoom")
+                .returnPlayerToWaitingRoom(client, player);
+        } catch (error) {
+            console.error(
+                `[euphire] Could not return expired resume player to the waiting room in guild ${snapshot.guildId}:`,
+                error
+            );
+        }
+
+        if (!returnedToWaitingRoom) {
+            const { markIntentionalDisconnect } = require("./playback");
+            markIntentionalDisconnect(player);
             try {
-                await coordinator.releaseBot(voiceChannelId, client.botId);
+                await player.destroy();
             } catch (error) {
-                console.error(
-                    `[euphire] Could not release expired voice session ${voiceChannelId}:`,
+                console.warn(
+                    `[euphire] Could not destroy expired resume player for guild ${snapshot.guildId}:`,
                     error.message
                 );
+            }
+            if (voiceChannelId) {
+                try {
+                    await coordinator.releaseBot(voiceChannelId, client.botId);
+                } catch (error) {
+                    console.error(
+                        `[euphire] Could not release expired voice session ${voiceChannelId}:`,
+                        error.message
+                    );
+                }
             }
         }
 
@@ -120,6 +215,7 @@ function scheduleResumeTimeout(client, player, snapshot) {
     }, RESUME_TIMEOUT_MS);
 
     player._resumeTimeout = timeout;
+    player._cancelPendingResume = false;
     timeout.unref?.();
 }
 
@@ -196,6 +292,9 @@ async function writePlayerSnapshot(client, player) {
         player.playing || player.paused ? serializeTrack(player.current) : null;
 
     if (!current && queue.length === 0) {
+        cancelledResumeSnapshots.delete(
+            getResumeSnapshotKey({ guildId: player.guildId, botId: client.botId })
+        );
         await removeSavedSession(player.guildId, client.botId);
         return;
     }
@@ -227,6 +326,7 @@ async function writePlayerSnapshot(client, player) {
         savedAt: Date.now(),
     };
 
+    cancelledResumeSnapshots.delete(getResumeSnapshotKey(snapshot));
     await getDB()
         .collection("playbackSessions")
         .updateOne(
@@ -403,6 +503,7 @@ async function prepareSnapshot(client, snapshot) {
     if (!client?.isReady?.()) {
         throw new Error("The session's bot is not connected to Discord yet.");
     }
+    if (isResumeSnapshotCancelled(snapshot)) return null;
     if (!snapshot.voiceChannelId) {
         throw new Error("The saved session has no voice channel.");
     }
@@ -419,6 +520,7 @@ async function prepareSnapshot(client, snapshot) {
             `Cannot access saved voice channel ${snapshot.voiceChannelId} in guild ${snapshot.guildId}: ${error.message}`
         );
     }
+    if (isResumeSnapshotCancelled(snapshot)) return null;
     if (!voiceChannel?.isVoiceBased?.()) {
         throw new Error(
             `Saved channel ${snapshot.voiceChannelId} is missing or is no longer a voice channel.`
@@ -426,6 +528,7 @@ async function prepareSnapshot(client, snapshot) {
     }
 
     const botMember = await guild.members.fetchMe();
+    if (isResumeSnapshotCancelled(snapshot)) return null;
     const voicePermissions = voiceChannel.permissionsFor(botMember);
     if (
         !voicePermissions?.has([
@@ -440,13 +543,16 @@ async function prepareSnapshot(client, snapshot) {
 
     const existingPlayer = client.riffy?.players?.get(snapshot.guildId);
     if (existingPlayer?._pendingResumeSnapshot) return existingPlayer;
+    if (existingPlayer) delete existingPlayer._cancelPendingResume;
 
     await waitForNode(client.riffy);
+    if (isResumeSnapshotCancelled(snapshot)) return null;
 
     const guildData = getGuildData(snapshot.guildId);
     const guildDoc = await getDB()
         .collection("guildData")
         .findOne({ guildId: snapshot.guildId });
+    if (isResumeSnapshotCancelled(snapshot)) return null;
     if (guildDoc) Object.assign(guildData, guildDoc);
 
     const userId =
@@ -460,6 +566,7 @@ async function prepareSnapshot(client, snapshot) {
             { guildId: snapshot.guildId, botId: snapshot.botId },
             { $set: { sessionOwnerId: String(userId) } }
         );
+        if (isResumeSnapshotCancelled(snapshot)) return null;
     }
 
     const reserved = await coordinator.reserveSpecificBot(
@@ -471,6 +578,10 @@ async function prepareSnapshot(client, snapshot) {
     );
     if (!reserved) {
         throw new Error("Could not reserve the bot for the saved voice channel.");
+    }
+    if (isResumeSnapshotCancelled(snapshot)) {
+        await coordinator.releaseBot(snapshot.voiceChannelId, client.botId);
+        return null;
     }
 
     const { ensurePlayer } = require("./playback");
@@ -484,6 +595,13 @@ async function prepareSnapshot(client, snapshot) {
         requesterId: userId,
         restoringSession: true,
     });
+
+    if (isResumeSnapshotCancelled(snapshot) || player._cancelPendingResume) {
+        if (!player._cancelPendingResume) {
+            await cancelPendingResumePlayer(client, player, snapshot);
+        }
+        return null;
+    }
 
     player.assignedTextChannel = snapshot.textChannelId || null;
     player._restoringSession = true;
@@ -518,6 +636,13 @@ async function prepareSnapshot(client, snapshot) {
                 err.message
             );
         }
+    }
+
+    if (isResumeSnapshotCancelled(snapshot) || player._cancelPendingResume) {
+        if (!player._cancelPendingResume) {
+            await cancelPendingResumePlayer(client, player, snapshot);
+        }
+        return null;
     }
 
     for (const track of resolvedTracks) {
@@ -590,7 +715,7 @@ async function sendResumePrompt(client, snapshot) {
         .setTitle("Your saved session is ready")
         .setDescription(
             "I’m back in your voice channel with your saved music session ready. " +
-                "Run **`e!resumesession`** within 3 minutes to continue, or I’ll leave so I’m available for someone else."
+            "Run **`e!resumesession`** within 3 minutes to continue, or I’ll return to the Euphie Waiting Room."
         );
 
     const payload = {
@@ -631,14 +756,22 @@ async function sendResumePrompt(client, snapshot) {
 
 async function restoreClientSessions(client) {
     await waitForNode(client.riffy, 60000);
-    const snapshots = await getDB()
-        .collection("playbackSessions")
+    const playbackSessions = getDB().collection("playbackSessions");
+    const snapshots = await playbackSessions
         .find({ botId: client.botId })
         .toArray();
 
     for (const snapshot of snapshots) {
+        if (isResumeSnapshotCancelled(snapshot)) continue;
+        const stillSaved = await playbackSessions.findOne({
+            guildId: snapshot.guildId,
+            botId: snapshot.botId,
+        });
+        if (!stillSaved || isResumeSnapshotCancelled(snapshot)) continue;
+
+        let player;
         try {
-            await prepareSnapshot(client, snapshot);
+            player = await prepareSnapshot(client, snapshot);
         } catch (err) {
             console.error(
                 `[euphire] Could not restore saved session for guild ${snapshot.guildId}:`,
@@ -646,9 +779,23 @@ async function restoreClientSessions(client) {
             );
             continue;
         }
+        if (
+            !player ||
+            player._cancelPendingResume ||
+            isResumeSnapshotCancelled(snapshot)
+        ) {
+            continue;
+        }
 
         if (!client._resumePromptedGuilds) {
             client._resumePromptedGuilds = new Set();
+        }
+        if (
+            player._cancelPendingResume ||
+            !player._pendingResumeSnapshot ||
+            isResumeSnapshotCancelled(snapshot)
+        ) {
+            continue;
         }
         if (!client._resumePromptedGuilds.has(snapshot.guildId)) {
             try {
@@ -664,6 +811,64 @@ async function restoreClientSessions(client) {
             }
         }
     }
+}
+
+async function cancelAllSavedResumeSessions() {
+    const playbackSessions = getDB().collection("playbackSessions");
+    const snapshots = await playbackSessions
+        .find(
+            {},
+            { projection: { guildId: 1, botId: 1, voiceChannelId: 1 } }
+        )
+        .toArray();
+    for (const snapshot of snapshots) {
+        cancelledResumeSnapshots.add(getResumeSnapshotKey(snapshot));
+    }
+
+    const deletion = await playbackSessions.deleteMany({});
+    const result = {
+        snapshotsCleared: deletion.deletedCount || 0,
+        pendingRestoresCancelled: 0,
+        botsReturnedToWaitingRoom: 0,
+        botsDisconnected: 0,
+        failures: [],
+    };
+
+    for (const client of coordinator.getAllClients()) {
+        const players = Array.from(client.riffy?.players?.values?.() || []);
+        for (const player of players) {
+            const snapshot = player._pendingResumeSnapshot || {
+                guildId: player.guildId,
+                botId: client.botId,
+                voiceChannelId: player.voiceChannel,
+            };
+            if (!player._pendingResumeSnapshot && !player._restoringSession) {
+                continue;
+            }
+
+            cancelledResumeSnapshots.add(getResumeSnapshotKey(snapshot));
+            result.pendingRestoresCancelled += 1;
+            const cancelled = await cancelPendingResumePlayer(
+                client,
+                player,
+                snapshot
+            );
+            if (cancelled.returnedToWaitingRoom) {
+                result.botsReturnedToWaitingRoom += 1;
+            } else if (!cancelled.alreadyCancelling) {
+                result.botsDisconnected += 1;
+            }
+            for (const error of cancelled.errors) {
+                result.failures.push({
+                    guildId: player.guildId,
+                    botId: client.botId,
+                    error,
+                });
+            }
+        }
+    }
+
+    return result;
 }
 
 function startCheckpointing(client) {
@@ -705,6 +910,7 @@ async function resumeGuildSession(guildId, userId, voiceChannelId = null) {
     }
 
     if (!snapshot) return null;
+    if (isResumeSnapshotCancelled(snapshot)) return null;
     if (
         snapshot.sessionOwnerId &&
         String(snapshot.sessionOwnerId) !== String(userId)
@@ -731,9 +937,23 @@ async function resumeGuildSession(guildId, userId, voiceChannelId = null) {
         existingPlayer?._pendingResumeSnapshot
             ? existingPlayer
             : await prepareSnapshot(client, snapshot);
+    if (
+        !player ||
+        player._cancelPendingResume ||
+        isResumeSnapshotCancelled(snapshot)
+    ) {
+        return null;
+    }
     const pendingSnapshot = player._pendingResumeSnapshot || snapshot;
     clearResumeTimeout(player);
     await player.play();
+    if (
+        player._cancelPendingResume ||
+        player._pendingResumeSnapshot !== pendingSnapshot ||
+        isResumeSnapshotCancelled(snapshot)
+    ) {
+        return null;
+    }
 
     if (
         pendingSnapshot.currentTrackRestored !== false &&
@@ -752,6 +972,7 @@ async function resumeGuildSession(guildId, userId, voiceChannelId = null) {
     }
 
     delete player._pendingResumeSnapshot;
+    delete player._cancelPendingResume;
     await persistPlayer(client, player);
     console.log(
         `[euphire] Resumed saved session for guild ${guildId} after owner confirmation`
@@ -760,6 +981,7 @@ async function resumeGuildSession(guildId, userId, voiceChannelId = null) {
 }
 
 module.exports = {
+    cancelAllSavedResumeSessions,
     checkpointAllClients,
     installPlayerPersistence,
     persistPlayer,

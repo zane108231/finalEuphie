@@ -224,7 +224,7 @@ async function handleButtonInteraction(client, interaction) {
 
         const supportButton = new ButtonBuilder()
             .setLabel("Known Outages")
-            .setURL("https://discord.gg/MRjEUhDCpZ")
+            .setURL("https://discord.gg/mCCyM8Msxm")
             .setStyle(ButtonStyle.Link);
 
         const voteButton = new ButtonBuilder()

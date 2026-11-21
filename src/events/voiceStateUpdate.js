@@ -340,6 +340,21 @@ module.exports = {
                 coordinator.markBotAvailable(disconnectedBotId);
                 return;
             }
+            if (movedFromStandby) {
+                try {
+                    await require("../utils/guildBotProfile")
+                        .setGuildBotAvailability(
+                            targetClient,
+                            oldState.guild.id,
+                            false
+                        );
+                } catch (error) {
+                    console.error(
+                        `[euphire] Failed to remove the available label from ${disconnectedBotId} in guild ${oldState.guild.id}:`,
+                        error
+                    );
+                }
+            }
             const targetOwner = coordinator.resolveSessionOwner(
                 newState.channelId,
                 oldState.guild

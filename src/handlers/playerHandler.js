@@ -254,7 +254,7 @@ async function sendLastfmLoginPrompt(client, player, guildData, userId) {
     const embed = new EmbedBuilder()
         .setColor(0xf5a623)
         .setDescription(
-            "Want to connect Euphie to Last.fm?\n" +
+            "Want to connect Euphie to fmbot?\n" +
             "Run `e!login` to connect your account and have your music scrobbled automatically."
         );
 

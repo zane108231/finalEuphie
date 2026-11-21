@@ -1,7 +1,7 @@
 # ![euphire Cover](/.github/assets/M_Banner.png)
 
 [![Invite euphire](https://img.shields.io/badge/-Invite%20euphire-111110?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTIgMTZjNC04IDQgMiAxMCAwczQtMTAgMTAtNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjRkFDQzE1IiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPg==&logoColor=white&style=flat-square&logoWidth=20)](https://discord.com/oauth2/authorize?client_id=1502977716196999309)
-[![Support Server](https://img.shields.io/badge/-Support%20Server-%235865F2?logo=discord&logoColor=white&style=flat-square&logoWidth=20)](https://discord.gg/MRjEUhDCpZ)
+[![Support Server](https://img.shields.io/badge/-Support%20Server-%235865F2?logo=discord&logoColor=white&style=flat-square&logoWidth=20)](https://discord.gg/mCCyM8Msxm)
 
 ## euphire
 

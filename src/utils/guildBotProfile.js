@@ -2,6 +2,71 @@ const { REST, Routes } = require("discord.js");
 const coordinator = require("./mongoCoordinator");
 
 const PRIMARY_BOT_ID = "euphie_main";
+const AVAILABLE_SUFFIX = " 🟢";
+const LEGACY_AVAILABLE_SUFFIX = " (available)";
+
+function isWaitingRoomBot(client, guildId) {
+    const data = require("./mongoGuildData").getGuildData(guildId);
+    const player = client.riffy?.players?.get(guildId);
+    return Boolean(
+        data.waitingRoomEnabled &&
+        data.waitingRoomChannelId &&
+        player?._waitingRoom &&
+        player.voiceChannel === data.waitingRoomChannelId
+    );
+}
+
+function formatBotNickname(client, guildId, baseName) {
+    const botSuffix = client.botId === PRIMARY_BOT_ID
+        ? ""
+        : `(${client.botId.match(/^euphie_(\d+)$/)?.[1] || ""})`;
+    const availabilitySuffix = isWaitingRoomBot(client, guildId)
+        ? AVAILABLE_SUFFIX
+        : "";
+    const suffix = `${botSuffix}${availabilitySuffix}`;
+    return `${baseName.slice(0, 32 - suffix.length)}${suffix}`;
+}
+
+async function setGuildBotAvailability(client, guildId, available) {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild || !client.isReady()) return;
+
+    const member = await guild.members.fetch({
+        user: client.user.id,
+        force: true,
+    });
+    const currentNickname = member.nickname;
+    const baseName = (currentNickname || client.user.username)
+        .replace(/ 🟢$/, "")
+        .replace(/ \(available\)$/, "");
+    const hasCurrentIndicator =
+        currentNickname?.endsWith(AVAILABLE_SUFFIX) === true;
+    const hasLegacyIndicator =
+        currentNickname?.endsWith(LEGACY_AVAILABLE_SUFFIX) === true;
+    if (
+        (available && !hasCurrentIndicator) ||
+        (!available && (hasCurrentIndicator || hasLegacyIndicator))
+    ) {
+        const nickname = available
+            ? `${baseName.slice(0, 32 - AVAILABLE_SUFFIX.length)}${AVAILABLE_SUFFIX}`
+            : baseName === client.user.username
+              ? null
+              : baseName;
+        const rest = new REST({ version: "10" }).setToken(client.token);
+        await rest.patch(Routes.guildMember(guildId, "@me"), {
+            body: { nick: nickname },
+            reason: available
+                ? "Bot joined the Euphie waiting room"
+                : "Bot left the Euphie waiting room",
+        });
+    }
+
+    await require("./waitingRoomStatus").updateWaitingRoomStatus(
+        guildId,
+        client.botId,
+        available
+    );
+}
 
 async function applyGuildBotProfile(
     guildId,
@@ -34,17 +99,16 @@ async function applyGuildBotProfile(
     const errors = [];
 
     for (const client of clients) {
-        const suffix = client.botId === PRIMARY_BOT_ID
-            ? ""
-            : `(${client.botId.match(/^euphie_(\d+)$/)?.[1] || ""})`;
         const nickname = copyName
-            ? `${baseName.slice(0, 32 - suffix.length)}${suffix}`
-            : null;
+            ? formatBotNickname(client, guildId, baseName)
+            : isWaitingRoomBot(client, guildId)
+              ? formatBotNickname(client, guildId, client.user.username)
+              : null;
         const botName = client.user?.username || client.botId || "Euphie";
 
         try {
             const rest = new REST({ version: "10" }).setToken(client.token);
-            const body = { nick: copyName ? nickname : null };
+            const body = { nick: nickname };
             if (copyAvatar) body.avatar = avatar;
             await rest.patch(Routes.guildMember(guildId, "@me"), {
                 body,
@@ -71,8 +135,11 @@ async function resetGuildBotProfile(guildId) {
         const botName = client.user?.username || client.botId || "Euphie";
         try {
             const rest = new REST({ version: "10" }).setToken(client.token);
+            const nickname = isWaitingRoomBot(client, guildId)
+                ? formatBotNickname(client, guildId, client.user.username)
+                : null;
             await rest.patch(Routes.guildMember(guildId, "@me"), {
-                body: { nick: null, avatar: null },
+                body: { nick: nickname, avatar: null },
                 reason: "Reset server-specific Euphie profile",
             });
             updated.push(botName);
@@ -98,10 +165,7 @@ async function applyGuildBotSettings(guildId, changes, reason) {
             const rest = new REST({ version: "10" }).setToken(client.token);
             const body = { ...changes };
             if (typeof body.nickBase === "string") {
-                const suffix = client.botId === PRIMARY_BOT_ID
-                    ? ""
-                    : `(${client.botId.match(/^euphie_(\d+)$/)?.[1] || ""})`;
-                body.nick = `${body.nickBase.slice(0, 32 - suffix.length)}${suffix}`;
+                body.nick = formatBotNickname(client, guildId, body.nickBase);
                 delete body.nickBase;
             }
             await rest.patch(Routes.guildMember(guildId, "@me"), {
@@ -131,4 +195,5 @@ module.exports = {
     resetGuildBotProfile,
     applyGuildBotAvatar,
     applyGuildBotSettings,
+    setGuildBotAvailability,
 };

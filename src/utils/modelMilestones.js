@@ -119,8 +119,14 @@ async function processQualifiedUser(guildId, userId) {
     const stats = db.collection("modelListeningStats");
     const config = await db.collection("guildData").findOne(
         { guildId },
-        { projection: { modelNotificationChannelId: 1 } }
+        {
+            projection: {
+                modelNotificationChannelId: 1,
+                automaticModelEnabled: 1,
+            },
+        }
     );
+    if (config?.automaticModelEnabled === false) return;
     if (!config?.modelNotificationChannelId) {
         await stats.updateOne(
             { guildId, userId, listeningMs: { $gte: MODEL_THRESHOLD_MS }, milestoneStatus: { $nin: ["complete", "processing"] } },
@@ -147,6 +153,20 @@ async function processQualifiedUser(guildId, userId) {
 
     try {
         const targetMember = await findGuildMember(guildId, userId);
+        const latestConfig = await db.collection("guildData").findOne(
+            { guildId },
+            { projection: { automaticModelEnabled: 1 } }
+        );
+        if (latestConfig?.automaticModelEnabled === false) {
+            await stats.updateOne(
+                { guildId, userId, milestoneStatus: "processing" },
+                {
+                    $set: { milestoneStatus: "pending" },
+                    $unset: { retryAt: "" },
+                }
+            );
+            return;
+        }
         const result = await applyModel(guildId, targetMember, config.modelNotificationChannelId);
         if (result.profileError) throw result.profileError;
         if (result.notificationError) throw result.notificationError;
@@ -348,6 +368,44 @@ async function setNotificationChannel(guildId, channelId) {
     return pending.length;
 }
 
+async function getAutomaticModelEnabled(guildId) {
+    const config = await requireDatabase()
+        .collection("guildData")
+        .findOne({ guildId }, { projection: { automaticModelEnabled: 1 } });
+    return config?.automaticModelEnabled !== false;
+}
+
+async function setAutomaticModelEnabled(guildId, enabled) {
+    if (typeof enabled !== "boolean") {
+        throw new TypeError("Automatic model setting must be a boolean.");
+    }
+
+    const db = requireDatabase();
+    await db.collection("guildData").updateOne(
+        { guildId },
+        { $set: { guildId, automaticModelEnabled: enabled } },
+        { upsert: true }
+    );
+    require("./mongoGuildData").getGuildData(guildId).automaticModelEnabled =
+        enabled;
+
+    if (!enabled) return 0;
+
+    await seedLegacyGuildStats(guildId);
+    const pending = await db.collection("modelListeningStats")
+        .find({
+            guildId,
+            listeningMs: { $gte: MODEL_THRESHOLD_MS },
+            milestoneStatus: { $nin: ["complete", "processing"] },
+        })
+        .sort({ updatedAt: 1 })
+        .toArray();
+    for (const entry of pending) {
+        await processQualifiedUser(guildId, entry.userId);
+    }
+    return pending.length;
+}
+
 async function getGuildModelStats(guildId, limit = 10) {
     await seedLegacyGuildStats(guildId);
     return requireDatabase()
@@ -398,6 +456,8 @@ module.exports = {
     startPlayerTracking,
     stopPlayerTracking,
     setNotificationChannel,
+    getAutomaticModelEnabled,
+    setAutomaticModelEnabled,
     getGuildModelStats,
     getCurrentModelUserId,
     manuallySetModel,

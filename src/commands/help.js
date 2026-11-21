@@ -249,7 +249,7 @@ function buildPageEmbed(pageNumber) {
     const data = HELP_PAGES[pageIndex];
 
     let content = `Page **${data.page}/${TOTAL_PAGES}**\n\n`;
-    content += `[${data.title}](https://discord.gg)\n`;
+    content += `[${data.title}](https://discord.gg/mCCyM8Msxm)\n`;
     content += "----------------------------------------\n";
     content += `${data.description}\n`;
     content += "----------------------------------------\n\n";

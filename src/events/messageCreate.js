@@ -18,10 +18,8 @@ function isJockieNoBotsMessage(message) {
         .join(" ")
         .replace(/\s+/g, " ")
         .toLowerCase();
-    return (
-        content.includes("there are no more bots available in this server") &&
-        content.includes("you can get 22 more bots with premium") &&
-        content.includes("check out the perks command")
+    return content.includes(
+        "there are no more bots available in this server"
     );
 }
 
@@ -54,7 +52,7 @@ async function respondToEuphieMention(client, message) {
         return false;
     }
 
-    const supportUrl = "https://discord.gg/7pYJFydEDy";
+    const supportUrl = "https://discord.gg/mCCyM8Msxm";
     const embed = new EmbedBuilder()
         .setColor(0xf4a7c7)
         .setDescription(
@@ -82,6 +80,7 @@ async function respondToEuphieMention(client, message) {
 
 module.exports = {
     name: "messageCreate",
+    isJockieNoBotsMessage,
     async execute(client, message) {
         if (!message.guild) return;
         if (message.author.bot) {

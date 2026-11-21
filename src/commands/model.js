@@ -7,7 +7,9 @@ const {
     MODEL_THRESHOLD_MS,
     getGuildModelStats,
     getCurrentModelUserId,
+    getAutomaticModelEnabled,
     manuallySetModel,
+    setAutomaticModelEnabled,
     setNotificationChannel,
 } = require("../utils/modelMilestones");
 const { isDeveloper } = require("../utils/developerAccess");
@@ -65,6 +67,67 @@ const commands = [
             } catch (error) {
                 console.error(`[euphire] /modelstats failed in ${interaction.guildId}:`, error);
                 return interaction.editReply(`Could not load model stats: ${error.message}`);
+            }
+        },
+    },
+    {
+        data: new SlashCommandBuilder()
+            .setName("modelauto")
+            .setDescription("Control automatic 100-hour model assignment for this server")
+            .addSubcommand((subcommand) =>
+                subcommand
+                    .setName("enable")
+                    .setDescription("Enable automatic model assignment")
+            )
+            .addSubcommand((subcommand) =>
+                subcommand
+                    .setName("disable")
+                    .setDescription("Disable automatic model assignment")
+            )
+            .addSubcommand((subcommand) =>
+                subcommand
+                    .setName("status")
+                    .setDescription("Show whether automatic model assignment is enabled")
+            ),
+        primaryOnly: true,
+        async execute(interaction) {
+            if (!isOwner(interaction)) return ownerOnlyReply(interaction);
+            if (!interaction.guild) return guildOnlyReply(interaction);
+
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            try {
+                const action = interaction.options.getSubcommand();
+                if (action === "status") {
+                    const enabled = await getAutomaticModelEnabled(
+                        interaction.guildId
+                    );
+                    return interaction.editReply(
+                        `Automatic 100-hour model assignment is **${enabled ? "enabled" : "disabled"}** for **${interaction.guild.name}**.`
+                    );
+                }
+                if (action !== "enable" && action !== "disable") {
+                    return interaction.editReply(
+                        "Use `/modelauto enable`, `/modelauto disable`, or `/modelauto status`."
+                    );
+                }
+
+                const enabled = action === "enable";
+                const checked = await setAutomaticModelEnabled(
+                    interaction.guildId,
+                    enabled
+                );
+                const result = enabled
+                    ? `Automatic model assignment is now **enabled** for **${interaction.guild.name}**. Checked ${checked} previously-qualified user(s).`
+                    : `Automatic model assignment is now **disabled** for **${interaction.guild.name}**. Listening hours will still be tracked, and manual \`/setmodel\` remains available.`;
+                return interaction.editReply(result);
+            } catch (error) {
+                console.error(
+                    `[euphire] /modelauto failed in ${interaction.guildId}:`,
+                    error
+                );
+                return interaction.editReply(
+                    `Could not update automatic model assignment: ${error.message}`
+                );
             }
         },
     },

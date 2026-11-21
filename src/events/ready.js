@@ -140,6 +140,7 @@ module.exports = {
                     require("../commands/createadminrole").data.toJSON(),
                     require("../commands/assignadminrole").data.toJSON(),
                     require("../commands/waitingroom").data.toJSON(),
+                    require("../commands/cancel-resumes").data.toJSON(),
                     require("../commands/testjockie").data.toJSON(),
                     ...require("../commands/model").commands.map((command) => command.data.toJSON()),
                 ]
@@ -153,7 +154,7 @@ module.exports = {
             }
             console.log(
                 commands.length
-                    ? "[euphire] Registered the profile, announcement, cleanup, reset-stats, global-stats, administrator-role, waiting-room, Jockie test, and model commands; cleared server-specific commands."
+                    ? "[euphire] Registered the profile, announcement, cleanup, reset-stats, global-stats, administrator-role, waiting-room, resume-cancel, Jockie test, and model commands; cleared server-specific commands."
                     : "[euphire] Cleared global and server-specific slash commands for this secondary bot."
             );
         } catch (error) {

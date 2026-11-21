@@ -109,6 +109,18 @@ async function joinClientToWaitingRoom(client, guildId) {
                 error.message
             );
         });
+    try {
+        await require("./guildBotProfile").setGuildBotAvailability(
+            client,
+            guildId,
+            true
+        );
+    } catch (error) {
+        console.error(
+            `[euphire] Failed to mark ${client.botId} available in guild ${guildId}:`,
+            error
+        );
+    }
 
     return {
         status: currentChannelId === channel.id ? "already" : "joined",
@@ -152,6 +164,18 @@ async function leaveClientWaitingRoom(client, guildId, channelId) {
             guild.members.cache.get(client.user.id) || guild.members.me;
         await member?.voice?.disconnect();
     }
+    try {
+        await require("./guildBotProfile").setGuildBotAvailability(
+            client,
+            guildId,
+            false
+        );
+    } catch (error) {
+        console.error(
+            `[euphire] Failed to remove the available label from ${client.botId} in guild ${guildId}:`,
+            error
+        );
+    }
     return { status: "left" };
 }
 
@@ -186,6 +210,14 @@ async function reconcileGuildWaitingRoom(guildId) {
             });
         }
     }
+    try {
+        await require("./waitingRoomStatus").updateWaitingRoomStatus(guildId);
+    } catch (error) {
+        console.error(
+            `[euphire] Failed to update the waiting-room status message in guild ${guildId}:`,
+            error
+        );
+    }
     return results;
 }
 
@@ -212,6 +244,7 @@ async function restoreClientWaitingRooms(client) {
 
 async function returnPlayerToWaitingRoom(client, player) {
     if (!player?.guildId || player._waitingRoom) return false;
+    const alreadyStopping = player._returningToWaitingRoom === true;
     const playerClient =
         coordinator
             .getAllClients()
@@ -261,10 +294,11 @@ async function returnPlayerToWaitingRoom(client, player) {
     }
 
     player._waitingRoom = true;
+    delete player._returningToWaitingRoom;
     player.queue?.clear?.();
     player.setLoop?.("none");
     try {
-        player.stop?.();
+        if (!alreadyStopping) player.stop?.();
     } catch (error) {
         console.error(
             `[euphire] Could not stop playback before returning ${playerClient.botId} to the waiting room:`,
@@ -317,6 +351,18 @@ async function returnPlayerToWaitingRoom(client, player) {
                 error.message
             );
         });
+    try {
+        await require("./guildBotProfile").setGuildBotAvailability(
+            playerClient,
+            player.guildId,
+            true
+        );
+    } catch (error) {
+        console.error(
+            `[euphire] Failed to mark ${playerClient.botId} available in guild ${player.guildId}:`,
+            error
+        );
+    }
     return true;
 }
 

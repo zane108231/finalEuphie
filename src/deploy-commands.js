@@ -25,6 +25,7 @@ const rest = new REST({ version: "10" }).setToken(process.env.BOT_TOKEN);
             require("./commands/createadminrole").data,
             require("./commands/assignadminrole").data,
             require("./commands/waitingroom").data,
+            require("./commands/cancel-resumes").data,
             require("./commands/testjockie").data,
             ...require("./commands/model").commands.map((command) => command.data),
         ];
@@ -32,7 +33,7 @@ const rest = new REST({ version: "10" }).setToken(process.env.BOT_TOKEN);
         await rest.put(Routes.applicationCommands(appId), {
             body: commands.map((command) => command.toJSON()),
         });
-        console.log("[euphire] Registered /botprofile, /announce, /cleanprofile, /resetstats, /clearglobalstats, /viewuserprofile, /profileaudit, /modelprofile, /developerprofile, /createadminrole, /assignadminrole, /waitingroom, /testjockie, /modelstats, /modelchannel, and /setmodel.");
+        console.log("[euphire] Registered /botprofile, /announce, /cleanprofile, /resetstats, /clearglobalstats, /viewuserprofile, /profileaudit, /modelprofile, /developerprofile, /createadminrole, /assignadminrole, /waitingroom, /cancel-resumes, /testjockie, /modelstats, /modelauto, /modelchannel, and /setmodel.");
     } catch (error) {
         console.error("[euphire] Failed to register slash commands:", error);
     }

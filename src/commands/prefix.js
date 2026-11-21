@@ -21,7 +21,7 @@ function buildPrefixHelpEmbed() {
         .setColor(0x2b2d31)
         .setDescription(
             "Page **14/20**\n\n" +
-            "[Prefix](https://discord.gg)\n" +
+            "[Prefix](https://discord.gg/mCCyM8Msxm)\n" +
             "---------------------------------\n" +
             "Prefix related commands\n" +
             "---------------------------------\n\n" +
