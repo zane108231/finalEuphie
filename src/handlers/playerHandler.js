@@ -1037,7 +1037,16 @@ function setupPlayerHandler(client) {
         
         if (!hasOtherActivePlayer(client, player.guildId)) {
             clearUpdateInterval(guildData);
-            resetSessionPermissions(player.guildId);
+        }
+        if (player.voiceChannel) {
+            try {
+                await resetSessionPermissions(player.guildId, player.voiceChannel);
+            } catch (error) {
+                console.error(
+                    `[euphire] Failed to reset session permissions after ${client.botId} disconnected:`,
+                    error.message
+                );
+            }
         }
     });
 

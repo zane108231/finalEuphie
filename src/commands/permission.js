@@ -20,6 +20,12 @@ const {
 const { getUserData } = require("../utils/mongoUserData");
 const coordinator = require("../utils/mongoCoordinator");
 
+function formatAvailablePermissions() {
+    return Object.values(AVAILABLE_PERMISSIONS)
+        .map(({ name, description }) => `\`${name}\` - ${description}`)
+        .join("\n");
+}
+
 function parseTarget(interaction, tokens, defaultType = "everyone") {
     // 1. Check slash options
     const slashUser = interaction.options?.getUser?.("user") || interaction.options?.getUser?.("target");
@@ -161,7 +167,10 @@ module.exports = {
                 .setName("allow")
                 .setDescription("Allow a specific permission for the current session or server")
                 .addStringOption((opt) =>
-                    opt.setName("permission").setDescription("Permission to allow (e.g. add track, leave, volume)").setRequired(true)
+                    opt
+                        .setName("permission")
+                        .setDescription("Permission to allow (e.g. add track, leave, volume)")
+                        .setRequired(true)
                 )
                 .addUserOption((opt) => opt.setName("user").setDescription("User to allow").setRequired(false))
                 .addRoleOption((opt) => opt.setName("role").setDescription("Role to allow").setRequired(false))
@@ -182,7 +191,10 @@ module.exports = {
                 .setName("deny")
                 .setDescription("Deny a specific permission for the current session or server")
                 .addStringOption((opt) =>
-                    opt.setName("permission").setDescription("Permission to deny").setRequired(true)
+                    opt
+                        .setName("permission")
+                        .setDescription("Permission to deny")
+                        .setRequired(true)
                 )
                 .addUserOption((opt) => opt.setName("user").setDescription("User to deny").setRequired(false))
                 .addRoleOption((opt) => opt.setName("role").setDescription("Role to deny").setRequired(false))
@@ -221,10 +233,10 @@ module.exports = {
         if (!guildId) return;
 
         const prefix = getPrefix(guildId);
-        const guildData = await ensureAllowMaps(guildId);
 
         // Resolve active player if any
         const voiceChannelId = interaction.member?.voice?.channel?.id;
+        const guildData = await ensureAllowMaps(guildId, voiceChannelId);
         const sessionOwner = voiceChannelId
             ? coordinator.resolveSessionOwner(voiceChannelId, interaction.guild) || coordinator.getSessionOwner(voiceChannelId)
             : null;
@@ -335,6 +347,12 @@ module.exports = {
                     });
                 }
             } else if (scope === "session") {
+                if (!voiceChannelId) {
+                    return interaction.reply({
+                        content: "❌ Join the voice channel for the session you want to configure, or use `--server` for server-wide permissions.",
+                        flags: MessageFlags.Ephemeral,
+                    });
+                }
                 const canManage = isSessionStarterOrAdmin(interaction.member, interaction.guild, player, guildData);
                 if (!canManage) {
                     return interaction.reply({
@@ -350,7 +368,7 @@ module.exports = {
 
         // 1. ALLOW ALL
         if (mode === "allow all") {
-            await grantPermission(guildId, target, "all", scope, interaction.user.id);
+            await grantPermission(guildId, target, "all", scope, interaction.user.id, voiceChannelId);
             const targetDisplay = formatTargetDisplay(target);
             const embed = new EmbedBuilder()
                 .setColor(0x00FF00)
@@ -360,7 +378,7 @@ module.exports = {
 
         // 2. DENY ALL
         if (mode === "deny all") {
-            await denyPermission(guildId, target, "all", scope, interaction.user.id);
+            await denyPermission(guildId, target, "all", scope, interaction.user.id, voiceChannelId);
             const targetDisplay = formatTargetDisplay(target);
             const embed = new EmbedBuilder()
                 .setColor(0xED4245)
@@ -370,7 +388,7 @@ module.exports = {
 
         // 3. RESET
         if (mode === "reset") {
-            await resetPermissions(guildId, target, scope, interaction.user.id);
+            await resetPermissions(guildId, target, scope, interaction.user.id, voiceChannelId);
             const targetDisplay = formatTargetDisplay(target);
             const embed = new EmbedBuilder()
                 .setColor(0x00FF00)
@@ -382,19 +400,19 @@ module.exports = {
         if (mode === "allow") {
             if (!rawPerm) {
                 return interaction.reply({
-                    content: `❌ Please specify a permission to allow.\nAvailable permissions: ${ALL_PERMISSIONS.map((p) => `\`${p}\``).join(", ")}`,
+                    content: `❌ Please specify a permission to allow.\nAvailable permissions:\n${formatAvailablePermissions()}`,
                     flags: MessageFlags.Ephemeral,
                 });
             }
             const perm = normalizePermission(rawPerm);
             if (!perm) {
                 return interaction.reply({
-                    content: `❌ Unknown permission: \`${rawPerm}\`.\nAvailable permissions: ${ALL_PERMISSIONS.map((p) => `\`${p}\``).join(", ")}`,
+                    content: `❌ Unknown permission: \`${rawPerm}\`.\nAvailable permissions:\n${formatAvailablePermissions()}`,
                     flags: MessageFlags.Ephemeral,
                 });
             }
 
-            await grantPermission(guildId, target, perm, scope, interaction.user.id);
+            await grantPermission(guildId, target, perm, scope, interaction.user.id, voiceChannelId);
             const targetDisplay = formatTargetDisplay(target);
             const embed = new EmbedBuilder()
                 .setColor(0x00FF00)
@@ -406,19 +424,19 @@ module.exports = {
         if (mode === "deny") {
             if (!rawPerm) {
                 return interaction.reply({
-                    content: `❌ Please specify a permission to deny.\nAvailable permissions: ${ALL_PERMISSIONS.map((p) => `\`${p}\``).join(", ")}`,
+                    content: `❌ Please specify a permission to deny.\nAvailable permissions:\n${formatAvailablePermissions()}`,
                     flags: MessageFlags.Ephemeral,
                 });
             }
             const perm = normalizePermission(rawPerm);
             if (!perm) {
                 return interaction.reply({
-                    content: `❌ Unknown permission: \`${rawPerm}\`.\nAvailable permissions: ${ALL_PERMISSIONS.map((p) => `\`${p}\``).join(", ")}`,
+                    content: `❌ Unknown permission: \`${rawPerm}\`.\nAvailable permissions:\n${formatAvailablePermissions()}`,
                     flags: MessageFlags.Ephemeral,
                 });
             }
 
-            await denyPermission(guildId, target, perm, scope, interaction.user.id);
+            await denyPermission(guildId, target, perm, scope, interaction.user.id, voiceChannelId);
             const targetDisplay = formatTargetDisplay(target);
             const embed = new EmbedBuilder()
                 .setColor(0xED4245)
@@ -438,7 +456,11 @@ module.exports = {
                 userData = await getUserData(interaction.user.id);
             }
 
-            const store = scope === "server" ? guildData.serverPermissions : guildData.sessionPermissions;
+            const store = scope === "server"
+                ? guildData.serverPermissions
+                : voiceChannelId
+                    ? guildData.sessionPermissionsByChannel?.[voiceChannelId] || guildData.sessionPermissions
+                    : guildData.sessionPermissions;
             const allows = store?.allows || {};
             const denies = store?.denies || {};
             const allowEveryone = store?.allowEveryone || [];
@@ -465,11 +487,23 @@ module.exports = {
                         else if (permName === "add track" || permName === "add playlist") isAllowed = true;
                         else isAllowed = false;
                     } else {
-                        // Specific user or role
-                        if (denyEveryone.includes(permName)) isAllowed = false;
-                        else if (denies[permName]?.includes(targetId)) isAllowed = false;
+                        const isRoleTarget = target.type === "role";
+                        const roleIds = isRoleTarget
+                            ? [targetId]
+                            : Array.from(memberObj?.roles?.cache?.keys?.() || []);
+                        const deniedIds = denies[permName] || [];
+                        const allowedIds = allows[permName] || [];
+                        const userDenied = !isRoleTarget && deniedIds.includes(targetId);
+                        const userAllowed = !isRoleTarget && allowedIds.includes(targetId);
+                        const roleDenied = roleIds.some((roleId) => deniedIds.includes(roleId));
+                        const roleAllowed = roleIds.some((roleId) => allowedIds.includes(roleId));
+
+                        if (userDenied) isAllowed = false;
+                        else if (userAllowed) isAllowed = true;
+                        else if (roleDenied) isAllowed = false;
+                        else if (roleAllowed) isAllowed = true;
+                        else if (denyEveryone.includes(permName)) isAllowed = false;
                         else if (allowEveryone.includes(permName)) isAllowed = true;
-                        else if (allows[permName]?.includes(targetId)) isAllowed = true;
                         else if (permName === "add track" || permName === "add playlist") isAllowed = true;
                         else isAllowed = false;
                     }

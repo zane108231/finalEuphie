@@ -198,6 +198,20 @@ const ACTION_TO_PERMISSION_MAP = {
 
 const ALL_PERMISSION_ALIASES = new Set(["all", "everything", "*", "every", "all permissions"]);
 
+function createPermissionStore() {
+    return { allows: {}, denies: {}, allowEveryone: [], denyEveryone: [] };
+}
+
+function hasPermissionRules(store) {
+    if (!store) return false;
+    return Boolean(
+        store.allowEveryone?.length ||
+        store.denyEveryone?.length ||
+        Object.values(store.allows || {}).some((ids) => ids?.length) ||
+        Object.values(store.denies || {}).some((ids) => ids?.length)
+    );
+}
+
 function isAllAction(raw) {
     return ALL_PERMISSION_ALIASES.has(String(raw || "").toLowerCase().trim());
 }
@@ -236,28 +250,39 @@ function resolveActions(raw) {
     return resolvePermissions(raw);
 }
 
-async function ensureAllowMaps(guildId) {
+async function ensureAllowMaps(guildId, voiceChannelId = null) {
     const guildData = await getGuildData(guildId);
     if (!guildData.sessionPermissions || typeof guildData.sessionPermissions !== "object") {
-        guildData.sessionPermissions = { allows: {}, denies: {}, allowEveryone: [], denyEveryone: [] };
+        guildData.sessionPermissions = createPermissionStore();
+    }
+    if (!guildData.sessionPermissionsByChannel || typeof guildData.sessionPermissionsByChannel !== "object") {
+        guildData.sessionPermissionsByChannel = {};
     }
     if (!guildData.serverPermissions || typeof guildData.serverPermissions !== "object") {
-        guildData.serverPermissions = { allows: {}, denies: {}, allowEveryone: [], denyEveryone: [] };
+        guildData.serverPermissions = createPermissionStore();
+    }
+    if (voiceChannelId && !guildData.sessionPermissionsByChannel[voiceChannelId]) {
+        if (hasPermissionRules(guildData.sessionPermissions)) {
+            guildData.sessionPermissionsByChannel[voiceChannelId] = guildData.sessionPermissions;
+            guildData.sessionPermissions = createPermissionStore();
+        } else {
+            guildData.sessionPermissionsByChannel[voiceChannelId] = createPermissionStore();
+        }
     }
     return guildData;
 }
 
-async function resetSessionPermissions(guildId) {
+async function resetSessionPermissions(guildId, voiceChannelId = null) {
     const guildData = await getGuildData(guildId);
-    guildData.djOwnerId = null;
-    guildData.sessionPermissions = {
-        allows: {},
-        denies: {},
-        allowEveryone: [],
-        denyEveryone: [],
-    };
-    guildData.musicAllowEveryone = new Set();
-    guildData.musicAllows = {};
+    if (voiceChannelId) {
+        delete guildData.sessionPermissionsByChannel?.[voiceChannelId];
+    } else {
+        guildData.djOwnerId = null;
+        guildData.sessionPermissions = createPermissionStore();
+        guildData.sessionPermissionsByChannel = {};
+        guildData.musicAllowEveryone = new Set();
+        guildData.musicAllows = {};
+    }
     await saveGuildData(guildId, guildData);
 }
 
@@ -275,39 +300,21 @@ function isServerAdmin(member) {
 function isDj(member, player, guildData) {
     if (!member?.id) return false;
     const userId = String(member.id);
+    const sessionVoiceChannelId = player?.voiceChannel || member.voice?.channel?.id;
 
-    // 1. Session DJ stored in coordinator
-    if (player?.voiceChannel) {
-        const sessionDj = coordinator.getSessionDJ(player.voiceChannel);
+    if (sessionVoiceChannelId) {
+        const sessionDj = coordinator.getSessionDJ(sessionVoiceChannelId);
         if (sessionDj && sessionDj === userId) return true;
     }
 
-    const memberVcId = member.voice?.channel?.id;
-    if (memberVcId) {
-        const sessionDj = coordinator.getSessionDJ(memberVcId);
-        if (sessionDj && sessionDj === userId) return true;
-    }
-
-    // 2. Requester ID on player
     if (player?.requesterId && String(player.requesterId) === userId) {
         return true;
     }
 
-    // 3. DJ owner ID in guildData
-    if (guildData?.djOwnerId && String(guildData.djOwnerId) === userId) {
-        return true;
-    }
-
-    // 4. If this user is the only non-bot human in the voice channel, they are effectively DJ
     const vc = member.voice?.channel;
-    if (vc?.members) {
+    if (vc?.id === sessionVoiceChannelId && vc?.members) {
         const humans = vc.members.filter((m) => !m.user?.bot);
         if (humans.size <= 1) return true;
-    }
-
-    // 5. Check if user is registered as DJ across active sessions in coordinator
-    for (const [, djId] of coordinator.sessionDJs) {
-        if (djId === userId) return true;
     }
 
     return false;
@@ -330,10 +337,6 @@ function isSessionStarterOrAdmin(member, guild, player, guildData) {
         }
     }
 
-    if (guildData?.djOwnerId && String(guildData.djOwnerId) === userId) {
-        return true;
-    }
-
     return false;
 }
 
@@ -348,13 +351,19 @@ function canControlMusic(member, player) {
  */
 async function canUseMusicAction(member, player, action) {
     const perm = actionToPermission(action);
-    if (!perm) return false;
+    if (!perm || !member?.id) return false;
 
     // Server Admin has full access
     if (isServerAdmin(member)) return true;
 
     const guildId = player?.guildId || member.guild?.id;
-    const guildData = await getGuildData(guildId);
+    const voiceChannelId = player?.voiceChannel || member.voice?.channel?.id;
+    if (player?.voiceChannel && member.voice?.channel?.id !== player.voiceChannel) return false;
+    const guildData = await ensureAllowMaps(guildId, voiceChannelId);
+
+    const userData = await getUserData(member.id);
+    if (userData.selfPermissions?.denies?.includes(perm)) return false;
+    if (userData.selfPermissions?.allows?.includes(perm)) return true;
 
     // DJ has full access
     if (isDj(member, player, guildData)) return true;
@@ -370,38 +379,27 @@ async function canUseMusicAction(member, player, action) {
     const roleIds = member.roles?.cache ? Array.from(member.roles.cache.keys()) : [];
 
     // Check Session scope first
-    const session = guildData.sessionPermissions || { allows: {}, denies: {}, allowEveryone: [], denyEveryone: [] };
-    if (session.denyEveryone?.includes(perm)) return false;
-    if (session.denies?.[perm]) {
-        const deniedList = session.denies[perm];
-        if (deniedList.includes(userId) || roleIds.some((r) => deniedList.includes(r))) {
-            return false;
-        }
-    }
-    if (session.allowEveryone?.includes(perm)) return true;
-    if (session.allows?.[perm]) {
-        const allowedList = session.allows[perm];
-        if (allowedList.includes(userId) || roleIds.some((r) => allowedList.includes(r))) {
-            return true;
-        }
-    }
+    const session =
+        (voiceChannelId && guildData.sessionPermissionsByChannel[voiceChannelId]) ||
+        guildData.sessionPermissions;
+    const evaluateStore = (store) => {
+        const denied = store.denies?.[perm] || [];
+        const allowed = store.allows?.[perm] || [];
+        if (denied.includes(userId)) return false;
+        if (allowed.includes(userId)) return true;
+        if (roleIds.some((roleId) => denied.includes(roleId))) return false;
+        if (roleIds.some((roleId) => allowed.includes(roleId))) return true;
+        if (store.denyEveryone?.includes(perm)) return false;
+        if (store.allowEveryone?.includes(perm)) return true;
+        return null;
+    };
+    const sessionResult = evaluateStore(session);
+    if (sessionResult !== null) return sessionResult;
 
     // Check Server scope
     const server = guildData.serverPermissions || { allows: {}, denies: {}, allowEveryone: [], denyEveryone: [] };
-    if (server.denyEveryone?.includes(perm)) return false;
-    if (server.denies?.[perm]) {
-        const deniedList = server.denies[perm];
-        if (deniedList.includes(userId) || roleIds.some((r) => deniedList.includes(r))) {
-            return false;
-        }
-    }
-    if (server.allowEveryone?.includes(perm)) return true;
-    if (server.allows?.[perm]) {
-        const allowedList = server.allows[perm];
-        if (allowedList.includes(userId) || roleIds.some((r) => allowedList.includes(r))) {
-            return true;
-        }
-    }
+    const serverResult = evaluateStore(server);
+    if (serverResult !== null) return serverResult;
 
     // Legacy fallback
     if (guildData.musicAllowEveryone instanceof Set && guildData.musicAllowEveryone.has(perm)) return true;
@@ -582,7 +580,7 @@ async function requireMusicAction(interaction, client, action) {
 /**
  * Grant permissions to user/role/everyone
  */
-async function grantPermission(guildId, target, permissions, scope = "session", authorId = null) {
+async function grantPermission(guildId, target, permissions, scope = "session", authorId = null, voiceChannelId = null) {
     const perms = Array.isArray(permissions) ? permissions : resolvePermissions(permissions);
     if (!perms.length) return false;
 
@@ -599,10 +597,12 @@ async function grantPermission(guildId, target, permissions, scope = "session", 
         return true;
     }
 
-    const guildData = await getGuildData(guildId);
-    await ensureAllowMaps(guildId);
-
-    const store = scope === "server" ? guildData.serverPermissions : guildData.sessionPermissions;
+    const guildData = await ensureAllowMaps(guildId, scope === "session" ? voiceChannelId : null);
+    const store = scope === "server"
+        ? guildData.serverPermissions
+        : voiceChannelId
+            ? guildData.sessionPermissionsByChannel[voiceChannelId]
+            : guildData.sessionPermissions;
     store.allows = store.allows || {};
     store.denies = store.denies || {};
     store.allowEveryone = store.allowEveryone || [];
@@ -631,7 +631,7 @@ async function grantPermission(guildId, target, permissions, scope = "session", 
 /**
  * Deny permissions from user/role/everyone
  */
-async function denyPermission(guildId, target, permissions, scope = "session", authorId = null) {
+async function denyPermission(guildId, target, permissions, scope = "session", authorId = null, voiceChannelId = null) {
     const perms = Array.isArray(permissions) ? permissions : resolvePermissions(permissions);
     if (!perms.length) return false;
 
@@ -648,10 +648,12 @@ async function denyPermission(guildId, target, permissions, scope = "session", a
         return true;
     }
 
-    const guildData = await getGuildData(guildId);
-    await ensureAllowMaps(guildId);
-
-    const store = scope === "server" ? guildData.serverPermissions : guildData.sessionPermissions;
+    const guildData = await ensureAllowMaps(guildId, scope === "session" ? voiceChannelId : null);
+    const store = scope === "server"
+        ? guildData.serverPermissions
+        : voiceChannelId
+            ? guildData.sessionPermissionsByChannel[voiceChannelId]
+            : guildData.sessionPermissions;
     store.allows = store.allows || {};
     store.denies = store.denies || {};
     store.allowEveryone = store.allowEveryone || [];
@@ -664,8 +666,6 @@ async function denyPermission(guildId, target, permissions, scope = "session", a
         if (isEveryone) {
             if (!store.denyEveryone.includes(p)) store.denyEveryone.push(p);
             store.allowEveryone = store.allowEveryone.filter((x) => x !== p);
-            // clear individual allows when everyone is denied
-            delete store.allows[p];
         } else {
             store.denies[p] = store.denies[p] || [];
             if (!store.denies[p].includes(targetId)) store.denies[p].push(targetId);
@@ -682,7 +682,7 @@ async function denyPermission(guildId, target, permissions, scope = "session", a
 /**
  * Reset permissions of a session, server, or user
  */
-async function resetPermissions(guildId, target, scope = "session", authorId = null) {
+async function resetPermissions(guildId, target, scope = "session", authorId = null, voiceChannelId = null) {
     if (scope === "self" && authorId) {
         const userData = await getUserData(authorId);
         userData.selfPermissions = { allows: [], denies: [] };
@@ -690,10 +690,12 @@ async function resetPermissions(guildId, target, scope = "session", authorId = n
         return true;
     }
 
-    const guildData = await getGuildData(guildId);
-    await ensureAllowMaps(guildId);
-
-    const store = scope === "server" ? guildData.serverPermissions : guildData.sessionPermissions;
+    const guildData = await ensureAllowMaps(guildId, scope === "session" ? voiceChannelId : null);
+    const store = scope === "server"
+        ? guildData.serverPermissions
+        : voiceChannelId
+            ? guildData.sessionPermissionsByChannel[voiceChannelId]
+            : guildData.sessionPermissions;
 
     const isAll = target === "all" || target?.type === "all";
     const isEveryone = target === "everyone" || target?.type === "everyone";

@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
+const { requireMusicAction } = require("../utils/permissions");
 
 module.exports = {
     aliases: ["ap"],
@@ -8,6 +9,9 @@ module.exports = {
         .setDescription("Toggle autoplay mode"),
 
     async execute(interaction, client) {
+        const player = await requireMusicAction(interaction, client, "autoplay");
+        if (!player) return;
+
         const guildData = getGuildData(interaction.guild.id);
         guildData.autoplay = !guildData.autoplay;
         await saveGuildData(interaction.guild.id, guildData);

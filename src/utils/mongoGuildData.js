@@ -37,6 +37,7 @@ function createDefaultGuildData() {
             allowEveryone: [],
             denyEveryone: []
         },
+        sessionPermissionsByChannel: {},
         serverPermissions: {
             allows: {},
             denies: {},
@@ -59,6 +60,9 @@ function normalizePermissions(data) {
     if (!data) return;
     if (!data.sessionPermissions || typeof data.sessionPermissions !== 'object') {
         data.sessionPermissions = { allows: {}, denies: {}, allowEveryone: [], denyEveryone: [] };
+    }
+    if (!data.sessionPermissionsByChannel || typeof data.sessionPermissionsByChannel !== 'object') {
+        data.sessionPermissionsByChannel = {};
     }
     if (!data.serverPermissions || typeof data.serverPermissions !== 'object') {
         data.serverPermissions = { allows: {}, denies: {}, allowEveryone: [], denyEveryone: [] };

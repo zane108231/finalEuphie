@@ -9,6 +9,7 @@ const {
     StringSelectMenuOptionBuilder,
 } = require("discord.js");
 const { getPrefix } = require("../utils/prefixStore");
+const { AVAILABLE_PERMISSIONS } = require("../utils/permissions");
 
 // Help directory pages for the supported commands.
 const HELP_PAGES = [
@@ -228,7 +229,21 @@ const HELP_PAGES = [
                 commands: [
                     { name: "join", desc: "Summon the bot into your current voice channel", usage: "join", aliases: ["summon"] },
                     { name: "leave", desc: "Disconnect the bot from the voice channel", usage: "leave", aliases: ["dc"] },
-                    { name: "permission", desc: "Configure DJ roles and command access permissions", usage: "permission" },
+                    {
+                        name: "permission",
+                        desc: "Allow or deny individual music permissions for a user, role, or everyone",
+                        usage: "permission allow <role|user|everyone> <permission>",
+                        aliases: [
+                            "permissions allow",
+                            "permissionsallow",
+                            "allow permission",
+                            "permissions add",
+                            "permissionallow",
+                            "allowpermission",
+                            "permission add",
+                            "add permission",
+                        ],
+                    },
                     { name: "resetstats", desc: "Developer-only reset of one user's listening statistics", usage: "resetstats <user ID>" },
                 ],
             },
@@ -387,17 +402,16 @@ function buildCommandDetailEmbed(commandName, prefix = "e!") {
 
     // Session permissions section
     if (foundCmd.name === "permission") {
-        let permissions = "";
-        permissions += "`add track` - Required to add tracks to the queue\n";
-        permissions += "`remove track` - Required to remove tracks from the queue\n";
-        permissions += "`shuffle queue` - Required to shuffle the queue\n";
-        permissions += "`change volume` - Required to change the volume\n";
-        permissions += "`update state` - Required to skip, pause, loop, seek\n";
-        permissions += "`index queue` - Required to move, clear\n";
-        permissions += "`leave` - Required to disconnect the bot\n";
-        permissions += "`autoplay` - Required to toggle autoplay\n";
-        permissions += "`audio filter` - Required to use audio filters\n";
-        embed.addFields({ name: "Session permissions", value: permissions || "No special permissions required", inline: false });
+        const permissions = Object.values(AVAILABLE_PERMISSIONS)
+            .map(({ name, description: permissionDescription }) =>
+                `\`${name}\` - ${permissionDescription}`
+            )
+            .join("\n");
+        embed.addFields({
+            name: "Available permissions",
+            value: permissions || "No special permissions required",
+            inline: false,
+        });
     }
     if (foundCmd.name === "sort") {
         embed.addFields({
@@ -410,12 +424,12 @@ function buildCommandDetailEmbed(commandName, prefix = "e!") {
     // Usage section
     let usageText = "";
     if (foundCmd.name === "permission") {
-        usageText += `\`\`\`${prefix}permission allow <role|user|everyone> <permission>\`\`\`\n`;
-        usageText += `\`\`\`${prefix}permission deny <role|user|everyone> <permission>\`\`\`\n`;
-        usageText += `\`\`\`${prefix}permissions allow all <role|user|everyone>\`\`\`\n`;
-        usageText += `\`\`\`${prefix}permissions deny all <role|user|everyone>\`\`\`\n`;
-        usageText += `\`\`\`${prefix}permissions reset <role|user|everyone|all>\`\`\`\n`;
-        usageText += `\`\`\`${prefix}permissions [role|user|everyone]\`\`\`\n`;
+        usageText += `\`\`\`${prefix}permission allow <role|user|everyone> <permission> [--session|--server|--self]\`\`\`\n`;
+        usageText += `\`\`\`${prefix}permission deny <role|user|everyone> <permission> [--session|--server|--self]\`\`\`\n`;
+        usageText += `\`\`\`${prefix}permissions allow all <role|user|everyone> [scope]\`\`\`\n`;
+        usageText += `\`\`\`${prefix}permissions deny all <role|user|everyone> [scope]\`\`\`\n`;
+        usageText += `\`\`\`${prefix}permissions reset <role|user|everyone|all> [scope]\`\`\`\n`;
+        usageText += `\`\`\`${prefix}permissions [role|user|everyone] [--session|--server|--self]\`\`\`\n`;
     } else if (foundCmd.name === "sort") {
         usageText = "```e!sort <sort type> <start over>```";
     } else {
@@ -426,6 +440,15 @@ function buildCommandDetailEmbed(commandName, prefix = "e!") {
     // Option section (for commands with options)
     if (foundCmd.name === "sort") {
         embed.addFields({ name: "Option", value: "`--reverse`", inline: false });
+    } else if (foundCmd.name === "permission") {
+        embed.addFields({
+            name: "Options",
+            value:
+                "`session` - Current voice-channel session, shared across Euphie bots (default)\n" +
+                "`server` - Server-wide permissions (server admins only)\n" +
+                "`self` - Your own permissions",
+            inline: false,
+        });
     }
 
     // Examples section
@@ -434,8 +457,9 @@ function buildCommandDetailEmbed(commandName, prefix = "e!") {
         examples += `\`\`\`sort length\`\`\`\n`;
         examples += `\`\`\`sort title false\`\`\`\n`;
     } else if (foundCmd.name === "permission") {
-        examples += `\`\`\`${prefix}permission allow @DJ add track\`\`\`\n`;
-        examples += `\`\`\`${prefix}permission deny @User leave\`\`\`\n`;
+        examples += `\`\`\`${prefix}permission allow everyone add track\`\`\`\n`;
+        examples += `\`\`\`${prefix}permission allow @Joakim remove track\`\`\`\n`;
+        examples += `\`\`\`${prefix}permission allow @DJ change volume --server\`\`\`\n`;
     } else if (foundCmd.usage) {
         examples += `\`\`\`${prefix}${foundCmd.usage}\`\`\`\n`;
     }

@@ -6,7 +6,11 @@ const {
     setAnnounceChannel,
     startIfIdle,
 } = require("../utils/playback");
-const { replyNotInVoiceChannel } = require("../utils/permissions");
+const {
+    replyNotInVoiceChannel,
+    canUseMusicAction,
+    buildMissingPermissionResponse,
+} = require("../utils/permissions");
 const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const coordinator = require("../utils/mongoCoordinator");
 const { searchYoutubeTrack, resolveSpotifyTrackAudio } = require("../utils/search");
@@ -152,9 +156,11 @@ module.exports = {
             setAnnounceChannel(player, guildData, interaction.channel.id);
             await coordinator.markBotActive(sessionOwner, voiceChannelId);
             coordinator.setSessionChannel(voiceChannelId, interaction.channel.id);
-            coordinator.setSessionDJ(voiceChannelId, interaction.user.id);
-            guildData.djOwnerId = interaction.user.id;
-            await saveGuildData(guildId, guildData);
+            if (newlyReserved) {
+                coordinator.setSessionDJ(voiceChannelId, interaction.user.id);
+                guildData.djOwnerId = interaction.user.id;
+                await saveGuildData(guildId, guildData);
+            }
 
             const result = await targetRiffy.resolve({
                 query: query.trim(),
@@ -168,6 +174,12 @@ module.exports = {
                 loadType === "playlist_loaded" ||
                 loadType === "PLAYLIST_LOADED"
             ) {
+                if (!(await canUseMusicAction(member, player, "add playlist"))) {
+                    await releaseNewReservation();
+                    return interaction.editReply(
+                        buildMissingPermissionResponse("add playlist", "session")
+                    );
+                }
                 const playlistUrl = query.trim();
                 let spotifyPlaylistMetadata = null;
                 if (/^https?:\/\/(?:www\.)?open\.spotify\.com\/.*playlist\//i.test(playlistUrl)) {
@@ -340,6 +352,12 @@ module.exports = {
                 loadType === "SEARCH_RESULT" ||
                 loadType === "TRACK_LOADED"
             ) {
+                if (!(await canUseMusicAction(member, player, "add track"))) {
+                    await releaseNewReservation();
+                    return interaction.editReply(
+                        buildMissingPermissionResponse("add track", "session")
+                    );
+                }
                 let track = tracks[0];
                 failureTrack = track || null;
                 if (!track) {

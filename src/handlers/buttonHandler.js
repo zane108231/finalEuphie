@@ -298,6 +298,13 @@ async function handleButtonInteraction(client, interaction) {
         if (!canControlMusic(interaction.member, player)) {
             return interaction.reply({ content: VOICE_CHANNEL_DENIAL, flags: MessageFlags.Ephemeral });
         }
+        if (!(await canUseMusicAction(interaction.member, player, "add track"))) {
+            const { buildMissingPermissionResponse } = require("../utils/permissions");
+            return interaction.reply({
+                ...buildMissingPermissionResponse("add track", "session"),
+                flags: MessageFlags.Ephemeral,
+            });
+        }
 
         await interaction.deferUpdate();
 
@@ -394,11 +401,13 @@ async function handleButtonInteraction(client, interaction) {
     }
 
     const buttonActionMap = {
+        pause_resume: "update state",
         skip: "skip",
         previous: "skip",
         stop: "stop",
         shuffle: "shuffle",
         loop: "loop",
+        autoplay: "autoplay",
         vol_up: "volume",
         vol_down: "volume",
     };

@@ -225,6 +225,11 @@ async function restoreClientWaitingRooms(client) {
     for (const guild of client.guilds.cache.values()) {
         try {
             const data = await getGuildDataAsync(guild.id);
+            await require("./guildBotProfile").restoreLegacyYearnNickname(
+                client,
+                guild.id,
+                data
+            );
             if (data.waitingRoomEnabled && data.waitingRoomChannelId) {
                 const result = await joinClientToWaitingRoom(client, guild.id);
                 if (result.status === "joined") {
@@ -327,14 +332,12 @@ async function returnPlayerToWaitingRoom(client, player) {
         await coordinator.releaseBot(previousVoiceChannel, playerClient.botId);
     }
 
-    const anotherActivePlayer = coordinator.getAllClients().some((candidate) => {
-        if (candidate === playerClient) return false;
-        const otherPlayer = candidate.riffy?.players?.get(player.guildId);
-        return Boolean(otherPlayer?.voiceChannel && !otherPlayer._waitingRoom);
-    });
-    if (!anotherActivePlayer) {
+    if (previousVoiceChannel) {
         try {
-            await require("./permissions").resetSessionPermissions(player.guildId);
+            await require("./permissions").resetSessionPermissions(
+                player.guildId,
+                previousVoiceChannel
+            );
         } catch (error) {
             console.error(
                 `[euphire] Failed to reset session permissions after ${playerClient.botId} stopped playback:`,

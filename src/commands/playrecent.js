@@ -15,6 +15,8 @@ const { startIfIdle } = require("../utils/playback");
 const {
     createNoBotInVoiceEmbed,
     replyNotInVoiceChannel,
+    canUseMusicAction,
+    denyMusicMessage,
 } = require("../utils/permissions");
 const coordinator = require("../utils/mongoCoordinator");
 const { resolveSpotifyTrackAudio } = require("../utils/search");
@@ -214,6 +216,12 @@ async function handleInteraction(interaction) {
     if (!player || player.voiceChannel !== voiceChannelId) {
         return interaction.followUp({
             embeds: [createNoBotInVoiceEmbed()],
+            flags: MessageFlags.Ephemeral,
+        });
+    }
+    if (!(await canUseMusicAction(interaction.member, player, "add track"))) {
+        return interaction.followUp({
+            content: denyMusicMessage(interaction.guild.id, "add track"),
             flags: MessageFlags.Ephemeral,
         });
     }

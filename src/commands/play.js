@@ -6,7 +6,11 @@ const {
 const { getGuildData, saveGuildData } = require("../utils/mongoGuildData");
 const { startIfIdle, ensurePlayer, setAnnounceChannel, buildNoBotsAvailablePayload } = require("../utils/playback");
 const coordinator = require("../utils/mongoCoordinator");
-const { replyNotInVoiceChannel } = require("../utils/permissions");
+const {
+    replyNotInVoiceChannel,
+    canUseMusicAction,
+    buildMissingPermissionResponse,
+} = require("../utils/permissions");
 const { createCouldNotPlayEmbed } = require("../utils/components");
 const {
     getSpotifyTrackDisplayName,
@@ -387,11 +391,11 @@ module.exports = {
             // Mark bot as active once player is created
             await coordinator.markBotActive(client.botId, voiceChannelId);
             coordinator.setSessionChannel(voiceChannelId, interaction.channel.id);
-            coordinator.setSessionDJ(voiceChannelId, interaction.user.id);
-
-            // Force set DJ ownership in guildData to match coordinator
-            guildData.djOwnerId = interaction.user.id;
-            await saveGuildData(interaction.guild.id, guildData);
+            if (!sessionOwner) {
+                coordinator.setSessionDJ(voiceChannelId, interaction.user.id);
+                guildData.djOwnerId = interaction.user.id;
+                await saveGuildData(interaction.guild.id, guildData);
+            }
         } catch (err) {
             console.error("[euphire] Failed to create player:", err);
             await coordinator.releaseBot(voiceChannelId, client.botId);
@@ -422,6 +426,11 @@ module.exports = {
                 loadType === "playlist_loaded" ||
                 loadType === "PLAYLIST_LOADED"
             ) {
+                if (!(await canUseMusicAction(member, player, "add playlist"))) {
+                    return interaction.editReply(
+                        buildMissingPermissionResponse("add playlist", "session")
+                    );
+                }
                 const addedTracks = [];
                 let failedTrackCount = 0;
                 const playlistLength = tracks.reduce(
@@ -609,6 +618,11 @@ module.exports = {
                 loadType === "SEARCH_RESULT" ||
                 loadType === "TRACK_LOADED"
             ) {
+                if (!(await canUseMusicAction(member, player, "add track"))) {
+                    return interaction.editReply(
+                        buildMissingPermissionResponse("add track", "session")
+                    );
+                }
                 let track = tracks[0];
                 failureTrack = track || null;
                 if (!track) {

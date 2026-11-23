@@ -253,9 +253,12 @@ async function ensurePlayer(client, {
             }
         }
         if (voiceChannelId) player.voiceChannel = voiceChannelId;
-        if (requesterId) {
+        if (requesterId && !player.requesterId) {
             player.requesterId = requesterId;
-            if (voiceChannelId) coordinator.setSessionDJ(voiceChannelId, requesterId);
+        }
+        if (voiceChannelId && !coordinator.getSessionDJ(voiceChannelId) &&
+            (player.requesterId || requesterId)) {
+            coordinator.setSessionDJ(voiceChannelId, player.requesterId || requesterId);
         }
 
         if (voiceChannelId && botMember.voice?.channelId !== voiceChannelId) {

@@ -5,7 +5,11 @@ const {
     createCouldNotPlayEmbed,
 } = require("../utils/components");
 const { startIfIdle, ensurePlayer, getOccupiedVoiceChannel, buildNoBotsAvailablePayload } = require("../utils/playback");
-const { createNotInVoiceChannelEmbed } = require("../utils/permissions");
+const {
+    createNotInVoiceChannelEmbed,
+    canUseMusicAction,
+    denyMusicMessage,
+} = require("../utils/permissions");
 
 async function sendChatPlayFeedback(channel, content, timeoutMs = 5000) {
     try {
@@ -121,6 +125,25 @@ async function handleChatPlayMessage(client, message) {
         });
 
         const { loadType, tracks, playlistInfo } = result;
+
+        const requiredPermission =
+            loadType === "playlist" ||
+            loadType === "playlist_loaded" ||
+            loadType === "PLAYLIST_LOADED"
+                ? "add playlist"
+                : ["search", "track", "SEARCH_RESULT", "TRACK_LOADED"].includes(loadType)
+                    ? "add track"
+                    : null;
+        if (
+            requiredPermission &&
+            !(await canUseMusicAction(message.member, player, requiredPermission))
+        ) {
+            await sendChatPlayFeedback(
+                message.channel,
+                denyMusicMessage(message.guild.id, requiredPermission)
+            );
+            return true;
+        }
 
 
 

@@ -27,10 +27,65 @@ function formatBotNickname(client, guildId, baseName) {
     return `${baseName.slice(0, 32 - suffix.length)}${suffix}`;
 }
 
+async function restoreLegacyYearnNickname(client, guildId, guildData) {
+    const savedNicknames = guildData?.euphieYearnOriginalNicknames;
+    if (
+        !savedNicknames ||
+        !Object.prototype.hasOwnProperty.call(savedNicknames, client.botId)
+    ) {
+        return false;
+    }
+
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild || !client.isReady()) return false;
+
+    const nickname = savedNicknames[client.botId];
+    const member = await guild.members.fetch({
+        user: client.user.id,
+        force: true,
+    });
+    if ((member.nickname ?? null) !== (nickname ?? null)) {
+        const rest = new REST({ version: "10" }).setToken(client.token);
+        await rest.patch(Routes.guildMember(guildId, "@me"), {
+            body: { nick: nickname },
+            reason: "Restore nickname after removing Euphie Yearn",
+        });
+    }
+
+    delete savedNicknames[client.botId];
+    guildData.euphieYearnEnabled = false;
+    const hasMoreNicknames = Object.keys(savedNicknames).length > 0;
+    if (!hasMoreNicknames) {
+        delete guildData.euphieYearnEnabled;
+        delete guildData.euphieYearnOriginalNicknames;
+    }
+    await require("./mongoGuildData").saveGuildData(guildId, guildData);
+    if (!hasMoreNicknames) {
+        const { getDB, isDBConnected } = require("./database");
+        if (isDBConnected()) {
+            await getDB().collection("guildData").updateOne(
+                { guildId },
+                {
+                    $unset: {
+                        euphieYearnEnabled: "",
+                        euphieYearnOriginalNicknames: "",
+                    },
+                }
+            );
+        }
+    }
+    return true;
+}
+
 async function setGuildBotAvailability(client, guildId, available) {
     const guild = client.guilds.cache.get(guildId);
     if (!guild || !client.isReady()) return;
 
+    await restoreLegacyYearnNickname(
+        client,
+        guildId,
+        require("./mongoGuildData").getGuildData(guildId)
+    );
     const member = await guild.members.fetch({
         user: client.user.id,
         force: true,
@@ -136,7 +191,7 @@ async function resetGuildBotProfile(guildId) {
         try {
             const rest = new REST({ version: "10" }).setToken(client.token);
             const nickname = isWaitingRoomBot(client, guildId)
-                ? formatBotNickname(client, guildId, client.user.username)
+                ? `${client.user.username.slice(0, 32 - AVAILABLE_SUFFIX.length)}${AVAILABLE_SUFFIX}`
                 : null;
             await rest.patch(Routes.guildMember(guildId, "@me"), {
                 body: { nick: nickname, avatar: null },
@@ -196,4 +251,5 @@ module.exports = {
     applyGuildBotAvatar,
     applyGuildBotSettings,
     setGuildBotAvailability,
+    restoreLegacyYearnNickname,
 };
